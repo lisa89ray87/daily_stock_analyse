@@ -26,6 +26,10 @@ ALERT_REASON_NO_ALERT = "NO_ALERT"
 ALERT_REASON_TRIGGER_INVALIDATED = "TRIGGER_INVALIDATED"
 ALERT_REASON_TRIGGER_EXPIRED = "TRIGGER_EXPIRED"
 
+VOLUME_STATE_WAIT_FOR_VOLUME = "WAIT_FOR_VOLUME"
+VOLUME_STATE_VOLUME_CONFIRMED = "VOLUME_CONFIRMED"
+VOLUME_STATE_VOLUME_LOST = "VOLUME_LOST"
+
 MIN_RISK_REWARD = 1.5
 
 
@@ -72,6 +76,14 @@ class TriggerEvidence:
 @dataclass
 class TriggerLifecycle:
     state: str
+    detail: str
+
+
+@dataclass
+class VolumeLifecycle:
+    state: str
+    rvol: float | None
+    required_rvol: float
     detail: str
 
 
@@ -360,9 +372,16 @@ def _build_trigger_evidence(
     )
 
 
-def _evaluate_trigger_lifecycle(evidence: TriggerEvidence, analysis: StockAnalysis) -> TriggerLifecycle:
+def _evaluate_trigger_lifecycle(evidence: TriggerEvidence, analysis: StockAnalysis, cfg: AppConfig, now_utc: datetime) -> TriggerLifecycle:
     if not evidence.confirmed:
         return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="Trigger evidence is not confirmed")
+
+    evidence_ts = _parse_ts(evidence.timestamp)
+    if evidence_ts is None:
+        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")
+
+    if now_utc - evidence_ts > timedelta(minutes=max(1, cfg.v4_max_trigger_age_minutes)):
+        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=max_trigger_age")
 
     current_price = evidence.current_price
     if not isinstance(current_price, (int, float)):
@@ -924,6 +943,49 @@ def _trade_levels_from_intraday_structure(analysis: StockAnalysis, cfg: AppConfi
     )
 
 
+def _resolve_volume_lifecycle(symbol_state: dict, rvol: float | None, required_rvol: float) -> VolumeLifecycle:
+    previous = symbol_state.get("volume_lifecycle", {}) if isinstance(symbol_state.get("volume_lifecycle"), dict) else {}
+    previous_state = str(previous.get("state") or "")
+
+    if not isinstance(rvol, (int, float)):
+        return VolumeLifecycle(
+            state=VOLUME_STATE_WAIT_FOR_VOLUME,
+            rvol=None,
+            required_rvol=required_rvol,
+            detail="Reliable RVOL value unavailable",
+        )
+
+    if rvol >= required_rvol:
+        if previous_state in {VOLUME_STATE_WAIT_FOR_VOLUME, VOLUME_STATE_VOLUME_LOST}:
+            return VolumeLifecycle(
+                state=VOLUME_STATE_VOLUME_CONFIRMED,
+                rvol=rvol,
+                required_rvol=required_rvol,
+                detail="RVOL reached configured gate",
+            )
+        return VolumeLifecycle(
+            state=VOLUME_STATE_VOLUME_CONFIRMED,
+            rvol=rvol,
+            required_rvol=required_rvol,
+            detail="RVOL remains above configured gate",
+        )
+
+    if previous_state == VOLUME_STATE_VOLUME_CONFIRMED:
+        return VolumeLifecycle(
+            state=VOLUME_STATE_VOLUME_LOST,
+            rvol=rvol,
+            required_rvol=required_rvol,
+            detail="RVOL dropped below configured gate after confirmation",
+        )
+
+    return VolumeLifecycle(
+        state=VOLUME_STATE_WAIT_FOR_VOLUME,
+        rvol=rvol,
+        required_rvol=required_rvol,
+        detail="RVOL below configured gate",
+    )
+
+
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
@@ -997,7 +1059,7 @@ def _evaluate_alert_eligibility(
     cfg: AppConfig,
     now: datetime,
     opening_range_window: bool,
-) -> tuple[AlertEligibilityResult, dict, str | None, TradeLevels | None]:
+) -> tuple[AlertEligibilityResult, dict, str | None, TradeLevels | None, VolumeLifecycle | None]:
     signal = analysis.signal
     direction = signal if signal in {"LONG", "SHORT"} else _intended_direction(analysis)
 
@@ -1025,6 +1087,7 @@ def _evaluate_alert_eligibility(
             v4,
             None,
             None,
+            None,
         )
 
     trigger_evidence = v4.get("trigger_evidence")
@@ -1045,6 +1108,7 @@ def _evaluate_alert_eligibility(
                 detail="Trigger evidence missing for ENTRY_TRIGGERED setup",
             ),
             v4,
+            None,
             None,
             None,
         )
@@ -1068,6 +1132,7 @@ def _evaluate_alert_eligibility(
             v4,
             None,
             None,
+            None,
         )
 
     candidate_event_type = "WAIT_TO_LONG" if direction == "LONG" else "WAIT_TO_SHORT"
@@ -1079,7 +1144,7 @@ def _evaluate_alert_eligibility(
     target_2 = trade_levels.target2
     rr_ratio = trade_levels.risk_reward
 
-    lifecycle = _evaluate_trigger_lifecycle(trigger_evidence, analysis)
+    lifecycle = _evaluate_trigger_lifecycle(trigger_evidence, analysis, cfg, now)
     v4["trigger_lifecycle"] = lifecycle
     if lifecycle.state == "TRIGGER_INVALIDATED":
         return (
@@ -1100,6 +1165,7 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
+            None,
         )
     if lifecycle.state == "TRIGGER_EXPIRED":
         return (
@@ -1120,6 +1186,7 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
+            None,
         )
 
     if not _is_valid_geometry(direction, entry, stop, target_1):
@@ -1148,6 +1215,7 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
+            None,
         )
 
     if opening_range_window and v4.get("trigger") == "Opening-range breakout":
@@ -1169,28 +1237,7 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
-        )
-
-    min_rvol = cfg.v4_opening_min_rvol if v4.get("phase") == "OPENING" else cfg.v4_normal_min_rvol
-    if rvol_quality == "RELIABLE" and (not isinstance(rvol_value, (int, float)) or rvol_value < min_rvol):
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_RVOL_TOO_LOW,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail=f"RVOL {rvol_value:.2f} < {min_rvol:.2f}" if isinstance(rvol_value, (int, float)) else "RVOL unavailable",
-            ),
-            v4,
-            candidate_event_type,
-            trade_levels,
+            None,
         )
 
     min_setup = cfg.v4_opening_min_setup_score if v4.get("phase") == "OPENING" else cfg.v4_normal_min_setup_score
@@ -1213,6 +1260,84 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
+            None,
+        )
+
+    if not isinstance(rr_ratio, (int, float)):
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_INVALID_RISK_LEVELS,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="Unable to compute RR from generated levels",
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+            None,
+        )
+
+    if rr_ratio < MIN_RISK_REWARD:
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_RR_TOO_LOW,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=f"RR {rr_ratio:.2f} < minimum {MIN_RISK_REWARD:.2f}",
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+            None,
+        )
+
+    min_rvol = cfg.v4_opening_min_rvol if v4.get("phase") == "OPENING" else cfg.v4_normal_min_rvol
+    volume_lifecycle: VolumeLifecycle | None = None
+    if rvol_quality == "RELIABLE":
+        volume_lifecycle = _resolve_volume_lifecycle(symbol_state, rvol_value if isinstance(rvol_value, (int, float)) else None, min_rvol)
+        if volume_lifecycle.state in {VOLUME_STATE_WAIT_FOR_VOLUME, VOLUME_STATE_VOLUME_LOST}:
+            return (
+                AlertEligibilityResult(
+                    eligible=False,
+                    reason=ALERT_REASON_RVOL_TOO_LOW,
+                    direction=direction,
+                    entry=entry,
+                    stop=stop,
+                    target1=target_1,
+                    target2=target_2,
+                    risk_reward=rr_ratio,
+                    setup_score=setup_score,
+                    rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                    rvol_quality=rvol_quality,
+                    detail=f"RVOL {rvol_value:.2f} < {min_rvol:.2f}" if isinstance(rvol_value, (int, float)) else "RVOL unavailable",
+                ),
+                v4,
+                candidate_event_type,
+                trade_levels,
+                volume_lifecycle,
+            )
+    elif rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}:
+        volume_lifecycle = VolumeLifecycle(
+            state=VOLUME_STATE_VOLUME_CONFIRMED,
+            rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+            required_rvol=min_rvol,
+            detail="RVOL quality is not reliable; using existing strict trigger path",
         )
 
     last_alert_type = symbol_state.get("last_alert_type")
@@ -1237,6 +1362,7 @@ def _evaluate_alert_eligibility(
                 v4,
                 candidate_event_type,
                 trade_levels,
+                volume_lifecycle,
             )
 
     if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == signal:
@@ -1258,48 +1384,7 @@ def _evaluate_alert_eligibility(
             v4,
             candidate_event_type,
             trade_levels,
-        )
-
-    if not isinstance(rr_ratio, (int, float)):
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_INVALID_RISK_LEVELS,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail="Unable to compute RR from generated levels",
-            ),
-            v4,
-            candidate_event_type,
-            trade_levels,
-        )
-
-    if rr_ratio < MIN_RISK_REWARD:
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_RR_TOO_LOW,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail=f"RR {rr_ratio:.2f} < minimum {MIN_RISK_REWARD:.2f}",
-            ),
-            v4,
-            candidate_event_type,
-            trade_levels,
+            volume_lifecycle,
         )
 
     return (
@@ -1320,6 +1405,7 @@ def _evaluate_alert_eligibility(
         v4,
         candidate_event_type,
         trade_levels,
+        volume_lifecycle,
     )
 
 
@@ -1382,8 +1468,15 @@ def _determine_event(
     v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
     eligibility: AlertEligibilityResult | None = None
     trade_levels: TradeLevels | None = None
+    volume_lifecycle: VolumeLifecycle | None = None
     if event_type is None:
-        eligibility, v4, candidate_event_type, trade_levels = _evaluate_alert_eligibility(analysis, symbol_state, cfg, now, opening_range_window)
+        eligibility, v4, candidate_event_type, trade_levels, volume_lifecycle = _evaluate_alert_eligibility(
+            analysis,
+            symbol_state,
+            cfg,
+            now,
+            opening_range_window,
+        )
         symbol_state["last_setup_state"] = v4.get("setup_state", "NO_TRADE")
         if "setup_components" in v4:
             _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
@@ -1431,15 +1524,65 @@ def _determine_event(
                 f"Stop {stop_text} | Target1 {t1_text} | Target2 {t2_text} | RR {rr_text} | Source {src_text}"
             )
 
+            if isinstance(volume_lifecycle, VolumeLifecycle):
+                rvol_live = f"{volume_lifecycle.rvol:.2f}" if isinstance(volume_lifecycle.rvol, (int, float)) else "UNAVAILABLE"
+                if volume_lifecycle.state == VOLUME_STATE_WAIT_FOR_VOLUME:
+                    print(f"{analysis.symbol}: WAIT_FOR_VOLUME | RVOL {rvol_live} | Required {volume_lifecycle.required_rvol:.2f}")
+                elif volume_lifecycle.state == VOLUME_STATE_VOLUME_CONFIRMED:
+                    print(f"{analysis.symbol}: VOLUME_CONFIRMED | RVOL {rvol_live} | Required {volume_lifecycle.required_rvol:.2f}")
+                elif volume_lifecycle.state == VOLUME_STATE_VOLUME_LOST:
+                    print(f"{analysis.symbol}: VOLUME_LOST | RVOL {rvol_live} | Required {volume_lifecycle.required_rvol:.2f}")
+
+            if isinstance(trade_levels, TradeLevels) and isinstance(v4.get("trigger_evidence"), TriggerEvidence):
+                symbol_state["volume_candidate"] = {
+                    "direction": eligibility.direction,
+                    "trigger_evidence": {
+                        "confirmed": v4["trigger_evidence"].confirmed,
+                        "direction": v4["trigger_evidence"].direction,
+                        "trigger_type": v4["trigger_evidence"].trigger_type,
+                        "trigger_price": v4["trigger_evidence"].trigger_price,
+                        "reference_level": v4["trigger_evidence"].reference_level,
+                        "current_price": v4["trigger_evidence"].current_price,
+                        "timestamp": v4["trigger_evidence"].timestamp,
+                        "detail": v4["trigger_evidence"].detail,
+                    },
+                    "trade_levels": {
+                        "entry": trade_levels.entry,
+                        "stop": trade_levels.stop,
+                        "target1": trade_levels.target1,
+                        "target2": trade_levels.target2,
+                        "risk_reward": trade_levels.risk_reward,
+                        "source": trade_levels.source,
+                    },
+                }
+
+            if isinstance(volume_lifecycle, VolumeLifecycle):
+                symbol_state["volume_lifecycle"] = {
+                    "state": volume_lifecycle.state,
+                    "rvol": volume_lifecycle.rvol,
+                    "required_rvol": volume_lifecycle.required_rvol,
+                    "detail": volume_lifecycle.detail,
+                    "updated_at": now.isoformat(),
+                }
+
         if not eligibility.eligible:
-            symbol_state["last_alert_decision"] = "ALERT_BLOCKED" if v4.get("setup_state") == "ENTRY_TRIGGERED" else "NO_ALERT"
+            if isinstance(volume_lifecycle, VolumeLifecycle) and volume_lifecycle.state in {VOLUME_STATE_WAIT_FOR_VOLUME, VOLUME_STATE_VOLUME_LOST}:
+                symbol_state["last_alert_decision"] = volume_lifecycle.state
+            else:
+                symbol_state["last_alert_decision"] = "ALERT_BLOCKED" if v4.get("setup_state") == "ENTRY_TRIGGERED" else "NO_ALERT"
             symbol_state["last_alert_reason"] = eligibility.reason
             if v4.get("setup_state") == "ENTRY_TRIGGERED":
+                if isinstance(volume_lifecycle, VolumeLifecycle) and volume_lifecycle.state == VOLUME_STATE_WAIT_FOR_VOLUME:
+                    return None
+
                 detail = eligibility.detail or ""
                 if detail:
                     print(f"{analysis.symbol}: ALERT_BLOCKED | {eligibility.reason} | {detail}")
                 else:
                     print(f"{analysis.symbol}: ALERT_BLOCKED | {eligibility.reason}")
+
+                if eligibility.reason in {ALERT_REASON_TRIGGER_INVALIDATED, ALERT_REASON_TRIGGER_EXPIRED}:
+                    symbol_state.pop("volume_candidate", None)
             else:
                 detail = eligibility.detail or eligibility.reason
                 print(
@@ -1451,6 +1594,7 @@ def _determine_event(
         event_type = candidate_event_type
         symbol_state["last_alert_decision"] = "ALERT_ELIGIBLE"
         symbol_state["last_alert_reason"] = "ALERT_ELIGIBLE"
+        symbol_state.pop("volume_candidate", None)
         rr_log = f"{eligibility.risk_reward:.2f}" if isinstance(eligibility.risk_reward, (int, float)) else "UNAVAILABLE"
         target2_log = f"{eligibility.target2:.2f}" if isinstance(eligibility.target2, (int, float)) else "UNAVAILABLE"
         print(
@@ -1515,6 +1659,7 @@ def _determine_event(
         ),
         "risk_reward_ratio": eligibility.risk_reward if eligibility is not None else _risk_reward_ratio_from_analysis(analysis),
         "trade_level_source": trade_levels.source if trade_levels is not None else "none",
+        "volume_lifecycle_state": volume_lifecycle.state if isinstance(volume_lifecycle, VolumeLifecycle) else None,
         "trigger_type": (
             v4.get("trigger_evidence").trigger_type
             if isinstance(v4.get("trigger_evidence"), TriggerEvidence)

@@ -623,7 +623,11 @@ def test_valid_trigger_low_rvol_is_blocked_rvol_too_low():
     a = _triggered_short()
     a.market_data.intraday_rvol = 1.0
     a.market_data.intraday_rvol_quality = "RELIABLE"
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("SHORT", 100.0, 101.0, 98.0, 97.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is None
     assert state["symbols"]["PLTR"]["last_alert_reason"] == "RVOL_TOO_LOW"
 
@@ -653,7 +657,12 @@ def test_valid_trigger_cooldown_blocked():
             }
         }
     }
-    event = _determine_event(_triggered_short(), state, cfg, now, opening_range_window=False)
+    a = _triggered_short()
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("SHORT", 100.0, 101.0, 98.0, 97.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is None
     assert state["symbols"]["PLTR"]["last_alert_reason"] == "COOLDOWN"
 
@@ -662,6 +671,226 @@ def test_valid_trigger_duplicate_position_blocked():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT", "position_state": "IN_POSITION", "active_direction": "SHORT"}}}
     now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    event = _determine_event(_triggered_short(), state, cfg, now, opening_range_window=False)
+    a = _triggered_short()
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("SHORT", 100.0, 101.0, 98.0, 97.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is None
     assert state["symbols"]["PLTR"]["last_alert_reason"] == "DUPLICATE_POSITION"
+
+
+def test_v47_entry_triggered_valid_rr_low_reliable_rvol_wait_for_volume():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 0.80
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.0, 102.0, 103.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_decision"] == "WAIT_FOR_VOLUME"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RVOL_TOO_LOW"
+
+
+def test_v47_wait_for_volume_never_dispatches_telegram():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 0.80
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.0, 102.0, 103.0, 2.0, "swing_structure", None)
+        blocked = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    alerts = [x for x in [blocked] if x is not None]
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        sent = _send_telegram_alerts(alerts, cfg)
+    assert sent == 0
+    assert send_mock.call_count == 0
+
+
+def test_v47_wait_for_volume_preserves_trigger_evidence():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 0.80
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.0, 102.0, 103.0, 2.0, "swing_structure", None)
+        _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    candidate = state["symbols"]["PLTR"].get("volume_candidate")
+    assert isinstance(candidate, dict)
+    assert candidate["trigger_evidence"]["confirmed"] is True
+
+
+def test_v47_volume_cross_wait_to_confirmed_revalidates_to_eligible():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {
+        "symbols": {
+            "PLTR": {
+                "last_signal": "WAIT",
+                "volume_lifecycle": {"state": "WAIT_FOR_VOLUME", "rvol": 0.8, "required_rvol": 1.5},
+            }
+        }
+    }
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.60
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.0, 102.0, 103.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+    assert state["symbols"]["PLTR"]["volume_lifecycle"]["state"] == "VOLUME_CONFIRMED"
+
+
+def test_v47_volume_lost_after_confirmed_does_not_dispatch():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {
+        "symbols": {
+            "PLTR": {
+                "last_signal": "WAIT",
+                "volume_lifecycle": {"state": "VOLUME_CONFIRMED", "rvol": 1.6, "required_rvol": 1.5},
+            }
+        }
+    }
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.20
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.0, 102.0, 103.0, 2.0, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_decision"] == "VOLUME_LOST"
+
+
+def test_v47_wait_then_trigger_invalidated_has_priority():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle("TRIGGER_INVALIDATED", "manual invalidation")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_INVALIDATED"
+
+
+def test_v47_wait_then_trigger_expired_has_priority():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle("TRIGGER_EXPIRED", "max age")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_EXPIRED"
+
+
+def test_v47_invalidated_trigger_cannot_alert_after_volume_rise():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.80
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle("TRIGGER_INVALIDATED", "invalidated")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_INVALIDATED"
+
+
+def test_v47_expired_trigger_cannot_alert_after_volume_rise():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.80
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle("TRIGGER_EXPIRED", "max age")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_EXPIRED"
+
+
+def test_v47_waiting_candidate_revalidation_invalid_levels_blocks_invalid_risk_levels():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.80
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, None, 102.0, 103.0, None, "none", "missing stop")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "INVALID_RISK_LEVELS"
+
+
+def test_v47_waiting_candidate_revalidation_rr_too_low_blocks():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "volume_lifecycle": {"state": "WAIT_FOR_VOLUME"}}}}
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.80
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels("LONG", 100.0, 99.5, 100.4, 100.8, 0.8, "swing_structure", None)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RR_TOO_LOW"
+
+
+def test_v47_reliable_rvol_gate_remains_150():
+    cfg = _cfg()
+    assert abs(cfg.v4_normal_min_rvol - 1.50) < 1e-9
