@@ -2,6 +2,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.daily_stock_analyse.config import load_config
+from src.daily_stock_analyse.market_hours import _parse_hhmm
 
 
 def test_config_loads_defaults(monkeypatch):
@@ -105,3 +106,35 @@ def test_live_market_timezone_explicit_new_york(monkeypatch):
     cfg = load_config(Path(__file__).resolve().parents[1])
     assert cfg.live_market_timezone == "America/New_York"
     ZoneInfo(cfg.live_market_timezone)
+
+
+def test_live_market_open_missing_uses_0930(monkeypatch):
+    monkeypatch.delenv("LIVE_MARKET_OPEN", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_open == "09:30"
+    assert _parse_hhmm(cfg.live_market_open).hour == 9
+    assert _parse_hhmm(cfg.live_market_open).minute == 30
+
+
+def test_live_market_open_empty_uses_0930(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_OPEN", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_open == "09:30"
+    assert _parse_hhmm(cfg.live_market_open).hour == 9
+    assert _parse_hhmm(cfg.live_market_open).minute == 30
+
+
+def test_live_market_open_whitespace_uses_0930(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_OPEN", "   ")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_open == "09:30"
+    assert _parse_hhmm(cfg.live_market_open).hour == 9
+    assert _parse_hhmm(cfg.live_market_open).minute == 30
+
+
+def test_live_market_open_explicit_0930_preserved(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_OPEN", "09:30")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_open == "09:30"
+    assert _parse_hhmm(cfg.live_market_open).hour == 9
+    assert _parse_hhmm(cfg.live_market_open).minute == 30

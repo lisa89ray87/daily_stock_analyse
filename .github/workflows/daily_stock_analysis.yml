@@ -46,7 +46,7 @@ jobs:
           LIVE_ALERT_ENABLED: ${{ vars.LIVE_ALERT_ENABLED }}
           LIVE_ALERT_INTERVAL_MINUTES: ${{ vars.LIVE_ALERT_INTERVAL_MINUTES }}
           LIVE_MARKET_TIMEZONE: "America/New_York"
-          LIVE_MARKET_OPEN: ${{ vars.LIVE_MARKET_OPEN }}
+          LIVE_MARKET_OPEN: "09:30"
           LIVE_MARKET_CLOSE: ${{ vars.LIVE_MARKET_CLOSE }}
           ALERT_MIN_SETUP_SCORE: ${{ vars.ALERT_MIN_SETUP_SCORE }}
           ALERT_MIN_RVOL: ${{ vars.ALERT_MIN_RVOL }}

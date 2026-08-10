@@ -76,3 +76,27 @@ def test_next_open_no_crash_when_live_market_timezone_empty(monkeypatch):
         malaysia_timezone="Asia/Kuala_Lumpur",
     )
     assert out.tzinfo is not None
+
+
+def test_next_open_no_crash_when_live_market_open_missing(monkeypatch):
+    monkeypatch.delenv("LIVE_MARKET_OPEN", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    out = next_us_market_open_malaysia(
+        datetime(2026, 8, 10, 0, 0, tzinfo=UTC),
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm=cfg.live_market_open,
+        malaysia_timezone="Asia/Kuala_Lumpur",
+    )
+    assert out.tzinfo is not None
+
+
+def test_next_open_no_crash_when_live_market_open_empty(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_OPEN", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    out = next_us_market_open_malaysia(
+        datetime(2026, 8, 10, 0, 0, tzinfo=UTC),
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm=cfg.live_market_open,
+        malaysia_timezone="Asia/Kuala_Lumpur",
+    )
+    assert out.tzinfo is not None
