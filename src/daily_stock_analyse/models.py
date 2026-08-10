@@ -8,6 +8,8 @@ Signal = Literal["LONG", "SHORT", "WAIT", "NO_TRADE"]
 RiskClass = Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
 TradingHorizon = Literal["DAY_TRADE", "SWING", "NO_TRADE"]
 MarketAlignment = Literal["MARKET_ALIGNED", "MARKET_COUNTERTREND", "UNKNOWN"]
+DirectionBias = Literal["LONG_BIAS", "SHORT_BIAS", "NEUTRAL"]
+SessionLabel = Literal["REGULAR", "PREMARKET", "AFTER_HOURS", "OVERNIGHT_REFERENCE", "UNKNOWN"]
 
 
 @dataclass
@@ -16,6 +18,7 @@ class MarketData:
     price: float | None = None
     previous_close: float | None = None
     latest_extended_price: float | None = None
+    latest_extended_session: SessionLabel = "UNKNOWN"
     gap_pct: float | None = None
     premarket_change_pct: float | None = None
     premarket_volume: float | None = None
@@ -41,7 +44,12 @@ class MarketData:
     breakout_state: str = "UNAVAILABLE"
     regular_session_timestamp: str | None = None
     premarket_timestamp: str | None = None
+    after_hours_timestamp: str | None = None
     intraday_timestamp: str | None = None
+    regular_price: float | None = None
+    premarket_price: float | None = None
+    after_hours_price: float | None = None
+    overnight_reference_price: float | None = None
     overnight_info: str = "UNAVAILABLE"
     premarket_info: str = "UNAVAILABLE"
     regular_session_info: str = "UNAVAILABLE"
@@ -77,6 +85,19 @@ class ScoreBreakdown:
     short_score: float
     components: dict[str, float]
     weights: dict[str, float]
+    long_points: dict[str, int] = field(default_factory=dict)
+    short_points: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class DataQuality:
+    price_available: bool
+    intraday_available: bool
+    premarket_available: bool
+    volume_available: bool
+    timestamp_available: bool
+    provider: str
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -85,8 +106,13 @@ class StockAnalysis:
     name: str
     signal: Signal
     trading_horizon: TradingHorizon
+    direction_bias: DirectionBias
     market_alignment: MarketAlignment
     setup_score: int
+    day_trade_candidate: bool
+    candidate_score: int
+    candidate_status: str
+    confirmation_needed: str
     confidence: str
     one_liner: str
     main_reason: str
@@ -95,6 +121,7 @@ class StockAnalysis:
     intelligence: IntelligenceBlock
     battle_plan: BattlePlan
     score: ScoreBreakdown
+    data_quality: DataQuality
     source_flags: dict[str, bool] = field(default_factory=dict)
 
 

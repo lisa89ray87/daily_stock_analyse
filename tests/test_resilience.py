@@ -1,6 +1,6 @@
+from src.daily_stock_analyse.config import AppConfig
 from src.daily_stock_analyse.models import IntelligenceBlock, MarketData
 from src.daily_stock_analyse.scoring import decide_signal, score_stock
-from src.daily_stock_analyse.config import AppConfig
 
 
 WEIGHTS = {
@@ -12,6 +12,31 @@ WEIGHTS = {
     "catalyst_event": 0.1,
     "risk_reward": 0.15,
 }
+
+
+def _cfg() -> AppConfig:
+    return AppConfig(
+        openai_api_key=None,
+        resend_api_key=None,
+        email_from=None,
+        email_to="raymond87tan@gmail.com",
+        send_email=False,
+        data_provider="yfinance",
+        news_provider="yfinance",
+        fixed_watchlist=[],
+        candidate_universe=[],
+        score_weights=WEIGHTS,
+        schedule_utc_cron="0 23 * * 1-5",
+        min_setup_score=70,
+        min_relative_volume=1.5,
+        day_trade_threshold=75,
+        short_threshold=0.70,
+        long_threshold=0.70,
+        dynamic_count=3,
+        day_trade_gap_threshold=3.0,
+        day_trade_rvol_threshold=1.5,
+        day_trade_min_setup_score=65,
+    )
 
 
 def test_missing_market_data_does_not_crash_scoring():
@@ -28,43 +53,29 @@ def test_invalid_api_like_content_is_tolerated():
     assert isinstance(score.total, float)
 
 
-def test_missing_intraday_data_does_not_break_decision():
+def test_missing_vwap_allows_day_trade_candidate_wait_for_live_confirmation():
     md = MarketData(
         symbol="NOINTRA",
         price=100,
         sma20=98,
         sma50=95,
         rsi14=55,
-        relative_volume=1.3,
+        relative_volume=1.8,
         support=96,
         resistance=106,
+        gap_pct=4.0,
+        day_change_pct=4.2,
+        trend="UPTREND",
+        breakout_state="NEAR BREAKOUT",
         vwap=None,
         opening_range_high=None,
         opening_range_low=None,
     )
     intel = IntelligenceBlock(facts=["growth"], upcoming_catalysts=["event"])
     score = score_stock(md, intel, WEIGHTS)
-    cfg = AppConfig(
-        openai_api_key=None,
-        resend_api_key=None,
-        email_from=None,
-        email_to="raymond87tan@gmail.com",
-        send_email=False,
-        data_provider="yfinance",
-        news_provider="yfinance",
-        fixed_watchlist=[],
-        candidate_universe=[],
-        score_weights=WEIGHTS,
-        schedule_utc_cron="0 23 * * 1-5",
-        min_setup_score=60,
-        min_relative_volume=1.15,
-        day_trade_threshold=72,
-        short_threshold=0.28,
-        long_threshold=0.28,
-        dynamic_count=3,
-    )
-    decision = decide_signal(score, md, cfg, "RISK_ON")
-    assert decision.trading_horizon in {"SWING", "NO_TRADE", "DAY_TRADE"}
+    decision = decide_signal(score, md, _cfg(), "RISK_ON")
+    assert decision.day_trade_candidate is True
+    assert decision.trading_horizon == "DAY_TRADE"
 
 
 def test_missing_premarket_data_is_tolerated():

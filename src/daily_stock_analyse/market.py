@@ -8,7 +8,7 @@ from .models import MarketRegime
 
 
 def _fetch_return(symbol: str) -> float | None:
-    hist = yf.Ticker(symbol).history(period="5d", interval="1d")
+    hist = yf.Ticker(symbol).history(period="5d", interval="1d", auto_adjust=False)
     if hist.empty or len(hist) < 2:
         return None
     close = hist["Close"].dropna()

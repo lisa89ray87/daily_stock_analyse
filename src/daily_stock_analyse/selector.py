@@ -29,11 +29,20 @@ def select_dynamic_opportunities(
     ranked = sorted(
         eligible,
         key=lambda x: (
+            1 if x.day_trade_candidate else 0,
+            x.candidate_score,
             x.setup_score,
             max(abs(x.score.long_score), abs(x.score.short_score)),
+            _liquidity_proxy(x),
             x.market_data.relative_volume or 0.0,
         ),
         reverse=True,
     )
 
     return ranked[:top_n]
+
+
+def _liquidity_proxy(analysis: StockAnalysis) -> float:
+    price = analysis.market_data.price or 0.0
+    avg_vol = analysis.market_data.avg_volume_20d or analysis.market_data.volume or 0.0
+    return price * avg_vol

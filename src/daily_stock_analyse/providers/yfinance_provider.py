@@ -26,8 +26,14 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         high = hist["High"].dropna() if "High" in hist else pd.Series(dtype=float)
         low = hist["Low"].dropna() if "Low" in hist else pd.Series(dtype=float)
 
+        # Core analytics are based on one internally consistent unadjusted daily series.
         md.price = float(close.iloc[-1])
+        md.regular_price = md.price
         md.previous_close = float(close.iloc[-2]) if len(close) >= 2 else None
+        md.overnight_reference_price = md.previous_close
+        md.latest_extended_price = md.price
+        md.latest_extended_session = "REGULAR"
+
         md.sma20 = _safe_series_mean(close, 20)
         md.sma50 = _safe_series_mean(close, 50)
         md.sma200 = _safe_series_mean(close, 200)
@@ -74,29 +80,47 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         else:
             md.breakout_state = "NO CLEAR BREAK"
 
-        info = ticker.fast_info or {}
-        premarket = _float_or_none(info.get("pre_market_price"))
-        previous_close = _float_or_none(info.get("previous_close"))
-        if previous_close is not None:
-            md.previous_close = previous_close
-        md.latest_extended_price = premarket if premarket is not None else md.price
+        fast_info = ticker.fast_info or {}
+        info = ticker.info or {}
 
-        if md.previous_close and md.latest_extended_price:
-            md.gap_pct = ((md.latest_extended_price - md.previous_close) / md.previous_close) * 100.0
-        if md.previous_close and premarket:
-            md.premarket_change_pct = ((premarket - md.previous_close) / md.previous_close) * 100.0
+        md.premarket_price = _pick_float(
+            _float_or_none(fast_info.get("pre_market_price")),
+            _float_or_none(info.get("preMarketPrice")),
+        )
+        md.after_hours_price = _pick_float(
+            _float_or_none(fast_info.get("post_market_price")),
+            _float_or_none(info.get("postMarketPrice")),
+        )
+        md.premarket_volume = _pick_float(
+            _float_or_none(fast_info.get("pre_market_volume")),
+            _float_or_none(info.get("preMarketVolume")),
+        )
 
-        md.premarket_volume = _float_or_none(info.get("pre_market_volume"))
+        if md.premarket_price is not None:
+            md.latest_extended_price = md.premarket_price
+            md.latest_extended_session = "PREMARKET"
+        elif md.after_hours_price is not None:
+            md.latest_extended_price = md.after_hours_price
+            md.latest_extended_session = "AFTER_HOURS"
 
-        day_high = _float_or_none(info.get("day_high"))
-        day_low = _float_or_none(info.get("day_low"))
+        if md.overnight_reference_price and md.latest_extended_price:
+            md.gap_pct = ((md.latest_extended_price - md.overnight_reference_price) / md.overnight_reference_price) * 100.0
+        if md.overnight_reference_price and md.premarket_price:
+            md.premarket_change_pct = ((md.premarket_price - md.overnight_reference_price) / md.overnight_reference_price) * 100.0
 
         md.overnight_info = (
-            f"Previous close: {md.previous_close:.2f}" if isinstance(md.previous_close, (int, float)) else "UNAVAILABLE"
+            f"Overnight reference (previous regular close): {md.overnight_reference_price:.2f}"
+            if isinstance(md.overnight_reference_price, (int, float))
+            else "UNAVAILABLE"
         )
         md.premarket_info = (
-            f"Extended/latest: {md.latest_extended_price:.2f}" if isinstance(md.latest_extended_price, (int, float)) else "UNAVAILABLE"
+            f"Premarket: {md.premarket_price:.2f}"
+            if isinstance(md.premarket_price, (int, float))
+            else "UNAVAILABLE"
         )
+
+        day_high = _pick_float(_float_or_none(fast_info.get("day_high")), _float_or_none(info.get("dayHigh")))
+        day_low = _pick_float(_float_or_none(fast_info.get("day_low")), _float_or_none(info.get("dayLow")))
         if isinstance(day_high, (int, float)) and isinstance(day_low, (int, float)):
             md.regular_session_info = f"Session range: {day_low:.2f} - {day_high:.2f}"
         else:
@@ -121,8 +145,17 @@ class YFinanceMarketDataProvider(MarketDataProvider):
 
         now_ts = datetime.now(UTC).isoformat()
         md.regular_session_timestamp = now_ts
-        md.premarket_timestamp = now_ts
+        md.premarket_timestamp = now_ts if md.premarket_price is not None else None
+        md.after_hours_timestamp = now_ts if md.after_hours_price is not None else None
         md.data_timestamp = now_ts
+
+        # Detect potential scale inconsistencies from alternate quote sources.
+        info_prev_close = _pick_float(_float_or_none(fast_info.get("previous_close")), _float_or_none(info.get("previousClose")))
+        if info_prev_close and md.overnight_reference_price:
+            rel_diff = abs(info_prev_close - md.overnight_reference_price) / max(1e-9, md.overnight_reference_price)
+            if rel_diff > 0.30:
+                md.delayed_note = "Latest available provider data may include corporate-action scale differences."
+
         return md
 
 
@@ -152,6 +185,13 @@ class YFinanceNewsProvider(NewsProvider):
 
         out.interpretation.append("News reflects available provider headlines only")
         return out
+
+
+def _pick_float(*values: float | None) -> float | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
 
 def _float_or_none(value) -> float | None:

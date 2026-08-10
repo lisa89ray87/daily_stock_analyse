@@ -17,56 +17,48 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append("")
 
     mr = report.market_regime
-    lines.append("## Market Analysis")
+    lines.append("## Market Regime")
     lines.append(f"- MARKET_REGIME: {mr.label}")
     lines.append(f"- Bias: {mr.bias}")
+    lines.append(f"- Futures direction: {mr.indicators.get('market_futures_direction', 'UNAVAILABLE')}")
     lines.append(f"- Main catalyst: {mr.main_catalyst}")
     lines.append(f"- Main risk: {mr.main_risk}")
-    lines.append(f"- Futures direction: {mr.indicators.get('market_futures_direction', 'UNAVAILABLE')}")
     lines.append(f"- Data note: {mr.summary}")
     lines.append("")
 
-    lines.append("## Overnight / Pre-market")
+    lines.append("## DAY TRADING WATCHLIST")
+    if not report.day_trading_watchlist:
+        lines.append("- NO DAY-TRADE CANDIDATES")
+    for x in report.day_trading_watchlist:
+        lines.append(f"### {x.symbol} ({x.name})")
+        lines.append(f"- Direction Bias: {x.direction_bias}")
+        lines.append(f"- Candidate Score: {x.candidate_score}")
+        lines.append(f"- Gap: {_fmt(x.market_data.gap_pct)}%")
+        lines.append(f"- Relative Volume: {_fmt(x.market_data.relative_volume)}")
+        lines.append(f"- Trend: {x.market_data.trend}")
+        lines.append(f"- Status: {x.candidate_status}")
+        lines.append(f"- Confirmation Needed: {x.confirmation_needed}")
+        lines.append(f"- Invalidation: {x.battle_plan.invalidation}")
+
+    lines.append("\n## Top Opportunities")
+    lines.append(f"- Best LONG: {report.best_long}")
+    lines.append(f"- Best SHORT: {report.best_short}")
+    lines.append(f"- Best Overall: {report.best_overall}")
+
+    lines.append("\n## Overnight / Pre-market")
     for analysis in report.analyses:
         md = analysis.market_data
         lines.append(
-            f"- {analysis.symbol}: prev_close={_fmt(md.previous_close)}, latest_ext={_fmt(md.latest_extended_price)}, "
+            f"- {analysis.symbol}: OVERNIGHT_REFERENCE={_fmt(md.overnight_reference_price)}, "
+            f"REGULAR={_fmt(md.regular_price)}, PREMARKET={_fmt(md.premarket_price)}, AFTER_HOURS={_fmt(md.after_hours_price)}, "
+            f"LATEST_EXT={_fmt(md.latest_extended_price)} ({md.latest_extended_session}), "
             f"gap_pct={_fmt(md.gap_pct)}, premarket_change_pct={_fmt(md.premarket_change_pct)}, "
-            f"premarket_volume={_fmt(md.premarket_volume)}, rel_vol={_fmt(md.relative_volume)}, "
-            f"timestamp={md.premarket_timestamp or 'UNAVAILABLE'}, note={md.delayed_note}"
+            f"premarket_volume={_fmt(md.premarket_volume)}, rel_vol={_fmt(md.relative_volume)}, timestamp={md.data_timestamp or 'UNAVAILABLE'}"
         )
-    lines.append("")
 
-    lines.append("## Core Conclusion")
+    lines.append("\n## Core Conclusion")
     for analysis in report.analyses:
         lines.extend(_stock_core(analysis))
-
-    lines.append("## Day Trading Watchlist")
-    if not report.day_trading_watchlist:
-        lines.append("- NO HIGH-CONVICTION SETUP")
-    for x in report.day_trading_watchlist:
-        lines.append(f"- Symbol: {x.symbol}")
-        lines.append(f"  Direction: {x.signal}")
-        lines.append(f"  Trading Horizon: {x.trading_horizon}")
-        lines.append(f"  Setup Score: {x.setup_score}")
-        lines.append(f"  Why interesting: {x.main_reason}")
-        lines.append(f"  Key confirmation: {x.market_data.breakout_state}")
-        lines.append(f"  Invalidation: {x.battle_plan.invalidation}")
-        lines.append(f"  Risk/Reward: {x.battle_plan.risk_reward_assessment}")
-        lines.append("  Cancel condition: Loss of volume confirmation or invalidation breach")
-
-    lines.append("\n## Top Opportunities")
-    lines.append(f"- Best LONG setup: {report.best_long}")
-    lines.append(f"- Best SHORT setup: {report.best_short}")
-    lines.append(f"- Best overall setup: {report.best_overall}")
-
-    lines.append("\n## Ranking")
-    lines.append("### Top 3 bullish opportunities")
-    for x in report.top3_bullish:
-        lines.append(f"- {x.symbol}: {x.signal} ({x.confidence})")
-    lines.append("### Top 3 bearish opportunities")
-    for x in report.top3_bearish:
-        lines.append(f"- {x.symbol}: {x.signal} ({x.confidence})")
 
     if ai_overlay:
         lines.append("\n## AI Overlay")
@@ -86,8 +78,6 @@ def render_html(report: DailyAnalysisReport, template_dir: Path) -> str:
     )
     template = env.get_template("daily_report.html")
 
-    bullish = report.top3_bullish
-    bearish = report.top3_bearish
     fixed_set = set(report.fixed_symbols)
     dynamic_set = set(report.dynamic_symbols)
 
@@ -96,8 +86,6 @@ def render_html(report: DailyAnalysisReport, template_dir: Path) -> str:
 
     return template.render(
         report=report,
-        bullish=bullish,
-        bearish=bearish,
         fixed_analyses=fixed_analyses,
         dynamic_analyses=dynamic_analyses,
         generated_local=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -109,32 +97,42 @@ def _stock_core(analysis: StockAnalysis) -> list[str]:
     out = [
         f"### {analysis.symbol} - {analysis.name}",
         f"- Signal: {analysis.signal}",
+        f"- Direction Bias: {analysis.direction_bias}",
         f"- Trading horizon: {analysis.trading_horizon}",
-        f"- Setup score: {analysis.setup_score}",
+        f"- Setup score: {analysis.setup_score}/100",
+        f"- Candidate score: {analysis.candidate_score}/100",
+        f"- Candidate status: {analysis.candidate_status}",
         f"- Market alignment: {analysis.market_alignment}",
         f"- Confidence: {analysis.confidence}",
-        f"- Conclusion: {analysis.one_liner}",
         f"- Main reason: {analysis.main_reason}",
-        f"- Risk classification: {analysis.risk_classification}",
-        "- Data Perspective:",
-        f"  price={_fmt(m.price)}, prev_close={_fmt(m.previous_close)}, latest_ext={_fmt(m.latest_extended_price)}, "
-        f"gap_pct={_fmt(m.gap_pct)}, premarket_change={_fmt(m.premarket_change_pct)}, premarket_volume={_fmt(m.premarket_volume)}, "
-        f"trend={m.trend}, SMA20={_fmt(m.sma20)}, SMA50={_fmt(m.sma50)}, SMA200={_fmt(m.sma200)}, "
-        f"RSI={_fmt(m.rsi14)}, MACD={_fmt(m.macd)}, ATR={_fmt(m.atr14)}, VWAP={_fmt(m.vwap)}, "
-        f"ORH={_fmt(m.opening_range_high)}, ORL={_fmt(m.opening_range_low)}, volume={_fmt(m.volume)}, rel_vol={_fmt(m.relative_volume)}, "
-        f"volatility={_fmt(m.volatility_20d)}, support={_fmt(m.support)}, resistance={_fmt(m.resistance)}, "
-        f"structure={m.recent_structure}, breakout={m.breakout_state}",
-        "- Intelligence (FACT):",
+        "- Setup Breakdown:",
     ]
-    out.extend([f"  - {x}" for x in analysis.intelligence.facts] or ["  - UNAVAILABLE"])
-    out.append("- Intelligence (INTERPRETATION):")
-    out.extend([f"  - {x}" for x in analysis.intelligence.interpretation] or ["  - UNAVAILABLE"])
-    out.append("- Battle Plan:")
-    out.append(f"  - Bullish scenario: {analysis.battle_plan.bullish_scenario}")
-    out.append(f"  - Bearish scenario: {analysis.battle_plan.bearish_scenario}")
-    out.append(f"  - Entry area: {analysis.battle_plan.entry_area}")
-    out.append(f"  - Target area: {analysis.battle_plan.target_area}")
-    out.append(f"  - Invalidation: {analysis.battle_plan.invalidation}")
+
+    points = analysis.score.long_points if analysis.direction_bias == "LONG_BIAS" else analysis.score.short_points
+    for key in ["Trend", "Momentum", "Relative Volume", "Gap", "Catalyst", "Risk/Reward", "Total"]:
+        if key in points:
+            out.append(f"  - {key}: +{points[key]}")
+
+    out.extend(
+        [
+            "- Data Perspective:",
+            f"  regular={_fmt(m.regular_price)}, premarket={_fmt(m.premarket_price)}, after_hours={_fmt(m.after_hours_price)}, "
+            f"latest_ext={_fmt(m.latest_extended_price)} ({m.latest_extended_session}), overnight_ref={_fmt(m.overnight_reference_price)}",
+            f"  gap={_fmt(m.gap_pct)}, premarket_change={_fmt(m.premarket_change_pct)}, premarket_volume={_fmt(m.premarket_volume)}, "
+            f"  trend={m.trend}, RSI={_fmt(m.rsi14)}, MACD={_fmt(m.macd)}, ATR={_fmt(m.atr14)}, VWAP={_fmt(m.vwap)}, "
+            f"  ORH={_fmt(m.opening_range_high)}, ORL={_fmt(m.opening_range_low)}, rel_vol={_fmt(m.relative_volume)}",
+            "- Data Quality:",
+        ]
+    )
+
+    if analysis.data_quality.warnings:
+        out.extend([f"  - {x}" for x in analysis.data_quality.warnings])
+    else:
+        out.append("  - None")
+
+    out.append(f"- Entry Trigger: {analysis.battle_plan.entry_area}")
+    out.append(f"- Confirmation Needed: {analysis.confirmation_needed}")
+    out.append(f"- Invalidation: {analysis.battle_plan.invalidation}")
     out.append("")
     return out
 

@@ -61,6 +61,9 @@ class AppConfig:
     short_threshold: float
     long_threshold: float
     dynamic_count: int
+    day_trade_gap_threshold: float
+    day_trade_rvol_threshold: float
+    day_trade_min_setup_score: int
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -154,4 +157,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         short_threshold=_normalize_fraction_threshold(_env_float("SHORT_THRESHOLD", 0.28)),
         long_threshold=_normalize_fraction_threshold(_env_float("LONG_THRESHOLD", 0.28)),
         dynamic_count=_env_int("DYNAMIC_COUNT", 3),
+        day_trade_gap_threshold=_env_float("DAY_TRADE_GAP_THRESHOLD", 3.0),
+        day_trade_rvol_threshold=_env_float("DAY_TRADE_RVOL_THRESHOLD", 1.5),
+        day_trade_min_setup_score=_env_int("DAY_TRADE_MIN_SETUP_SCORE", 65),
     )

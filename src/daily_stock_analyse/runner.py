@@ -9,7 +9,7 @@ from .ai_analysis import generate_ai_overlay
 from .config import AppConfig, load_config
 from .email_provider import EmailPayload, ResendEmailProvider
 from .market import build_market_regime
-from .models import BattlePlan, DailyAnalysisReport, IntelligenceBlock, StockAnalysis
+from .models import BattlePlan, DailyAnalysisReport, DataQuality, IntelligenceBlock, StockAnalysis
 from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
 from .reporting import render_html, render_markdown
 from .scoring import decide_signal, score_stock
@@ -24,6 +24,7 @@ def run_analysis(base_path: Path | None = None) -> int:
     news_provider = YFinanceNewsProvider()
 
     market_regime = build_market_regime()
+    sector_strength = market_regime.indicators.get("semiconductor_etf_change_pct")
 
     all_symbols = list(dict.fromkeys(cfg.fixed_watchlist + cfg.candidate_universe))
     analyses: list[StockAnalysis] = []
@@ -31,7 +32,7 @@ def run_analysis(base_path: Path | None = None) -> int:
 
     for symbol in all_symbols:
         try:
-            analyses.append(_analyze_symbol(symbol, cfg, market_regime.label, market_provider, news_provider))
+            analyses.append(_analyze_symbol(symbol, cfg, market_regime.label, sector_strength, market_provider, news_provider))
         except Exception as exc:
             errors.append(f"{symbol}: analysis failed ({exc})")
             analyses.append(_unavailable_analysis(symbol, f"Provider failure: {exc}"))
@@ -50,15 +51,15 @@ def run_analysis(base_path: Path | None = None) -> int:
     bullish_ranked = sorted(selected_analyses, key=lambda x: x.score.long_score, reverse=True)[:3]
     bearish_ranked = sorted(selected_analyses, key=lambda x: x.score.short_score, reverse=True)[:3]
 
-    day_trade_watchlist = [
-        x
-        for x in selected_analyses
-        if x.trading_horizon == "DAY_TRADE" and x.signal in {"LONG", "SHORT"} and x.setup_score >= cfg.day_trade_threshold
-    ]
+    day_trade_watchlist = sorted(
+        [x for x in selected_analyses if x.day_trade_candidate],
+        key=lambda x: (x.candidate_score, x.setup_score, x.market_data.relative_volume or 0.0),
+        reverse=True,
+    )[:5]
 
-    best_long = _best_for_direction(selected_analyses, "LONG", cfg.min_setup_score)
-    best_short = _best_for_direction(selected_analyses, "SHORT", cfg.min_setup_score)
-    best_overall = _best_overall(selected_analyses, cfg.min_setup_score)
+    best_long = _best_for_direction(selected_analyses, "LONG")
+    best_short = _best_for_direction(selected_analyses, "SHORT")
+    best_overall = _best_overall(selected_analyses)
 
     report = DailyAnalysisReport(
         generated_at_utc=datetime.now(UTC),
@@ -116,7 +117,14 @@ def run_analysis(base_path: Path | None = None) -> int:
     return 0
 
 
-def _analyze_symbol(symbol: str, cfg: AppConfig, regime_label: str, market_provider, news_provider) -> StockAnalysis:
+def _analyze_symbol(
+    symbol: str,
+    cfg: AppConfig,
+    regime_label: str,
+    sector_strength: float | None,
+    market_provider,
+    news_provider,
+) -> StockAnalysis:
     md = market_provider.get_market_data(symbol)
     intelligence = news_provider.get_news(symbol)
 
@@ -124,7 +132,7 @@ def _analyze_symbol(symbol: str, cfg: AppConfig, regime_label: str, market_provi
         intelligence.upcoming_catalysts = ["Monitor next earnings window and sector headlines"]
 
     score = score_stock(md, intelligence, cfg.score_weights)
-    decision = decide_signal(score, md, cfg, regime_label)
+    decision = decide_signal(score, md, cfg, regime_label, sector_strength)
 
     risk_class = "UNKNOWN"
     if md.volatility_20d is not None:
@@ -137,28 +145,70 @@ def _analyze_symbol(symbol: str, cfg: AppConfig, regime_label: str, market_provi
 
     battle_plan = _build_battle_plan(md, decision.signal)
 
+    warnings = _build_data_quality_warnings(symbol, md)
+    data_quality = DataQuality(
+        price_available=md.price is not None,
+        intraday_available=md.vwap is not None or md.opening_range_high is not None,
+        premarket_available=md.premarket_price is not None,
+        volume_available=md.volume is not None,
+        timestamp_available=md.data_timestamp is not None,
+        provider=md.provider,
+        warnings=warnings,
+    )
+
     return StockAnalysis(
         symbol=symbol,
-        name=symbol,
+        name=_display_name(symbol),
         signal=decision.signal,
         trading_horizon=decision.trading_horizon,
+        direction_bias=decision.direction_bias,
         market_alignment=decision.market_alignment,
         setup_score=decision.setup_score,
+        day_trade_candidate=decision.day_trade_candidate,
+        candidate_score=decision.candidate_score,
+        candidate_status=decision.candidate_status,
+        confirmation_needed=decision.confirmation_needed,
         confidence=decision.confidence,
-        one_liner=f"{symbol} is rated {decision.signal} based on latest available technical/news inputs.",
+        one_liner=f"{_display_name(symbol)} is rated {decision.signal} based on latest available technical/news inputs.",
         main_reason=decision.reason,
         risk_classification=risk_class,
         market_data=md,
         intelligence=intelligence,
         battle_plan=battle_plan,
         score=score,
+        data_quality=data_quality,
         source_flags={
             "market_data_available": md.price is not None,
             "news_available": intelligence.news_available,
             "intraday_available": md.vwap is not None or md.opening_range_high is not None,
-            "premarket_available": md.latest_extended_price is not None,
+            "premarket_available": md.premarket_price is not None,
         },
     )
+
+
+def _display_name(symbol: str) -> str:
+    if symbol.upper() == "000660.KS":
+        return "SK Hynix (KRX)"
+    if symbol.upper() == "SNDK":
+        return "SanDisk"
+    return symbol
+
+
+def _build_data_quality_warnings(symbol: str, md) -> list[str]:
+    warnings: list[str] = []
+    if md.premarket_price is None:
+        warnings.append("PREMARKET_UNAVAILABLE")
+    if md.vwap is None and md.opening_range_high is None:
+        warnings.append("INTRADAY_UNAVAILABLE")
+    if md.premarket_volume is None:
+        warnings.append("EXTENDED_HOURS_UNAVAILABLE")
+    if md.volume is None:
+        warnings.append("VOLUME_UNAVAILABLE")
+    if md.data_timestamp is None:
+        warnings.append("STALE_DATA")
+    if symbol.upper() == "SNDK":
+        warnings.append("TICKER_MAPPING_WARNING")
+    return warnings
 
 
 def _build_battle_plan(md, signal: str) -> BattlePlan:
@@ -171,17 +221,17 @@ def _build_battle_plan(md, signal: str) -> BattlePlan:
 
     if md.price is not None and md.support is not None and md.resistance is not None:
         if signal == "LONG":
-            entry = f"Near support/retest zone around {md.support:.2f}"
-            target = f"Toward resistance around {md.resistance:.2f}"
+            entry = "Break above resistance with volume confirmation"
+            target = f"Toward resistance expansion above {md.resistance:.2f}"
             invalidation = f"Break below {md.support * 0.98:.2f}"
         elif signal == "SHORT":
-            entry = f"Near resistance rejection around {md.resistance:.2f}"
-            target = f"Toward support around {md.support:.2f}"
-            invalidation = f"Break above {md.resistance * 1.02:.2f}"
+            entry = "Break below support with increasing selling volume"
+            target = f"Toward lower support under {md.support:.2f}"
+            invalidation = f"Reclaim above {md.resistance * 1.02:.2f}"
         else:
-            entry = "No entry until directional breakout/breakdown confirmation"
+            entry = "Wait for breakout/breakdown trigger"
             target = "No active target"
-            invalidation = "Invalid if risk/reward remains poor"
+            invalidation = "Invalid if setup confirmation never appears"
 
     rr = "UNAVAILABLE"
     if md.support is not None and md.resistance is not None and md.price is not None:
@@ -222,13 +272,27 @@ def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
     from .models import ScoreBreakdown
 
     score = ScoreBreakdown(total=0.0, long_score=0.0, short_score=0.0, components={}, weights={})
+    dq = DataQuality(
+        price_available=False,
+        intraday_available=False,
+        premarket_available=False,
+        volume_available=False,
+        timestamp_available=md.data_timestamp is not None,
+        provider=md.provider,
+        warnings=["STALE_DATA"],
+    )
     return StockAnalysis(
         symbol=symbol,
-        name=symbol,
+        name=_display_name(symbol),
         signal="NO_TRADE",
         trading_horizon="NO_TRADE",
+        direction_bias="NEUTRAL",
         market_alignment="UNKNOWN",
         setup_score=0,
+        day_trade_candidate=False,
+        candidate_score=0,
+        candidate_status="NO DAY-TRADE CANDIDATES",
+        confirmation_needed="Data unavailable",
         confidence="LOW",
         one_liner="Insufficient data",
         main_reason=reason,
@@ -237,32 +301,29 @@ def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
         intelligence=intel,
         battle_plan=battle,
         score=score,
+        data_quality=dq,
         source_flags={"market_data_available": False, "news_available": False},
     )
 
 
-def _best_for_direction(analyses: list[StockAnalysis], direction: str, min_setup_score: int) -> str:
-    eligible = [x for x in analyses if x.signal == direction and x.setup_score >= min_setup_score]
+def _best_for_direction(analyses: list[StockAnalysis], direction: str) -> str:
+    eligible = [x for x in analyses if x.direction_bias == f"{direction}_BIAS"]
     if not eligible:
         return "NO HIGH-CONVICTION SETUP"
-    ranked = sorted(
-        eligible,
-        key=lambda x: (x.setup_score, max(x.score.long_score, x.score.short_score)),
-        reverse=True,
+    ranked = sorted(eligible, key=lambda x: (x.candidate_score, x.setup_score), reverse=True)
+    best = ranked[0]
+    return (
+        f"{best.symbol} | Bias: {best.direction_bias} | Status: {best.signal} | Reason: {best.main_reason}"
     )
-    return f"{ranked[0].symbol} ({ranked[0].signal})"
 
 
-def _best_overall(analyses: list[StockAnalysis], min_setup_score: int) -> str:
-    eligible = [x for x in analyses if x.signal in {"LONG", "SHORT"} and x.setup_score >= min_setup_score]
+def _best_overall(analyses: list[StockAnalysis]) -> str:
+    eligible = [x for x in analyses if x.day_trade_candidate or x.signal in {"LONG", "SHORT"}]
     if not eligible:
         return "NO HIGH-CONVICTION SETUP"
-    ranked = sorted(
-        eligible,
-        key=lambda x: (x.setup_score, max(x.score.long_score, x.score.short_score)),
-        reverse=True,
-    )
-    return f"{ranked[0].symbol} ({ranked[0].signal})"
+    ranked = sorted(eligible, key=lambda x: (x.candidate_score, x.setup_score), reverse=True)
+    best = ranked[0]
+    return f"{best.symbol} | Bias: {best.direction_bias} | Status: {best.signal}"
 
 
 def main() -> int:

@@ -23,6 +23,9 @@ def test_threshold_overrides(monkeypatch):
     monkeypatch.setenv("SHORT_THRESHOLD", "0.31")
     monkeypatch.setenv("LONG_THRESHOLD", "0.29")
     monkeypatch.setenv("DYNAMIC_COUNT", "4")
+    monkeypatch.setenv("DAY_TRADE_GAP_THRESHOLD", "3.2")
+    monkeypatch.setenv("DAY_TRADE_RVOL_THRESHOLD", "1.7")
+    monkeypatch.setenv("DAY_TRADE_MIN_SETUP_SCORE", "67")
     cfg = load_config(Path(__file__).resolve().parents[1])
     assert cfg.min_setup_score == 66
     assert cfg.min_relative_volume == 1.3
@@ -30,3 +33,6 @@ def test_threshold_overrides(monkeypatch):
     assert cfg.short_threshold == 0.31
     assert cfg.long_threshold == 0.29
     assert cfg.dynamic_count == 4
+    assert cfg.day_trade_gap_threshold == 3.2
+    assert cfg.day_trade_rvol_threshold == 1.7
+    assert cfg.day_trade_min_setup_score == 67
