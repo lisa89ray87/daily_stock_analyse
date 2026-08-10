@@ -2,6 +2,15 @@ name: Live Stock Alerts
 
 on:
   workflow_dispatch:
+    inputs:
+      telegram_test:
+        description: "Run one-time Telegram connectivity test (no trading logic/state/email)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
   schedule:
     - cron: "*/5 * * * 1-5"
 
@@ -26,6 +35,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Restore alert state
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         id: restore-alert-state
         uses: actions/cache/restore@v4
         with:
@@ -34,7 +44,16 @@ jobs:
           restore-keys: |
             live-alert-state-${{ github.ref_name }}-
 
+      - name: Run Telegram connectivity test
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true' }}
+        env:
+          TELEGRAM_ENABLED: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m src.daily_stock_analyse.telegram_connectivity_test
+
       - name: Run live alerts
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
@@ -65,14 +84,14 @@ jobs:
         run: python -m src.daily_stock_analyse.live_alerts
 
       - name: Save alert state
-        if: always()
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         uses: actions/cache/save@v4
         with:
           path: artifacts/alert_state.json
           key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload live artifacts
-        if: always()
+        if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         uses: actions/upload-artifact@v5
         with:
           name: live-stock-alert-artifacts
