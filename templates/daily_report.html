@@ -6,86 +6,60 @@
     <title>Daily Stock Analysis</title>
     <style>
       :root {
-        --bg: #f4f7fb;
+        --bg: #f5f8ff;
         --card: #ffffff;
         --ink: #1f2937;
         --muted: #6b7280;
-        --accent: #005bbb;
+        --accent: #0f4c81;
         --good: #0f9d58;
         --bad: #c62828;
-        --warn: #b26a00;
+        --warn: #9a6800;
       }
       body {
         margin: 0;
         font-family: "Segoe UI", Tahoma, sans-serif;
-        background: linear-gradient(180deg, #eef4ff 0%, var(--bg) 100%);
+        background: linear-gradient(180deg, #eaf1ff 0%, var(--bg) 100%);
         color: var(--ink);
       }
       .container {
         max-width: 920px;
         margin: 0 auto;
-        padding: 16px;
+        padding: 14px;
       }
-      .header {
+      .header, .section {
         background: var(--card);
-        border-radius: 14px;
-        padding: 20px;
-        box-shadow: 0 6px 20px rgba(0, 91, 187, 0.08);
-      }
-      h1 {
-        margin: 0;
-        font-size: 24px;
-        color: var(--accent);
-      }
-      .sub {
-        color: var(--muted);
-        margin-top: 8px;
-        font-size: 14px;
-      }
-      .section {
-        margin-top: 14px;
-        background: var(--card);
-        border-radius: 14px;
-        padding: 16px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-      }
-      th,
-      td {
-        padding: 10px 8px;
-        border-bottom: 1px solid #e8ecf3;
-        text-align: left;
-      }
-      th {
-        color: var(--muted);
-        font-weight: 600;
-      }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px;
-      }
-      .card {
-        border: 1px solid #e8ecf3;
         border-radius: 12px;
-        padding: 12px;
+        padding: 14px;
+        box-shadow: 0 4px 16px rgba(15, 76, 129, 0.08);
+        margin-bottom: 12px;
       }
-      .signal-long { color: var(--good); font-weight: 700; }
-      .signal-short { color: var(--bad); font-weight: 700; }
-      .signal-hold, .signal-sell, .signal-no { color: var(--warn); font-weight: 700; }
-      .mono { font-family: "Consolas", "Courier New", monospace; font-size: 12px; }
-      .risk {
-        margin-top: 14px;
+      h1 { margin: 0; font-size: 22px; color: var(--accent); }
+      h2 { margin: 0 0 10px 0; font-size: 18px; }
+      h3 { margin: 0 0 8px 0; font-size: 15px; }
+      .sub { margin-top: 8px; color: var(--muted); font-size: 12px; }
+      .pill {
+        display: inline-block;
+        margin-right: 8px;
+        margin-top: 6px;
+        padding: 5px 8px;
+        border-radius: 999px;
         font-size: 12px;
-        color: var(--muted);
+        background: #eef3fb;
       }
-      @media (max-width: 680px) {
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { padding: 7px 6px; border-bottom: 1px solid #e6edf8; text-align: left; }
+      th { color: var(--muted); }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .card { border: 1px solid #e6edf8; border-radius: 10px; padding: 10px; }
+      .signal-LONG { color: var(--good); font-weight: 700; }
+      .signal-SHORT { color: var(--bad); font-weight: 700; }
+      .signal-WAIT, .signal-NO_TRADE { color: var(--warn); font-weight: 700; }
+      .mono { font-family: "Consolas", "Courier New", monospace; font-size: 11px; }
+      .risk { color: var(--muted); font-size: 12px; }
+      @media (max-width: 700px) {
         .grid { grid-template-columns: 1fr; }
-        th, td { font-size: 12px; padding: 8px 6px; }
         h1 { font-size: 20px; }
+        h2 { font-size: 16px; }
       }
     </style>
   </head>
@@ -97,75 +71,116 @@
       </div>
 
       <div class="section">
-        <h2>Market Summary</h2>
-        <p>
-          <strong>Regime:</strong> {{ report.market_regime.label }} ({{ report.market_regime.bias }})<br />
-          <strong>Main catalyst:</strong> {{ report.market_regime.main_catalyst }}<br />
-          <strong>Main risk:</strong> {{ report.market_regime.main_risk }}<br />
-          <strong>Data note:</strong> {{ report.market_regime.summary }}
+        <h2>Market Regime</h2>
+        <div class="pill">{{ report.market_regime.label }}</div>
+        <div class="pill">Bias: {{ report.market_regime.bias }}</div>
+        <div class="pill">Futures: {{ report.market_regime.indicators.get('market_futures_direction', 'UNAVAILABLE') }}</div>
+        <p class="risk">
+          Catalyst: {{ report.market_regime.main_catalyst }}<br />
+          Risk: {{ report.market_regime.main_risk }}<br />
+          Data note: {{ report.market_regime.summary }}
         </p>
       </div>
 
       <div class="section">
-        <h2>Watchlist Table</h2>
+        <h2>Overnight / Pre-market</h2>
         <table>
           <thead>
             <tr>
               <th>Symbol</th>
-              <th>Signal</th>
-              <th>Confidence</th>
-              <th>Price</th>
-              <th>Trend</th>
-              <th>RSI</th>
-              <th>Rel Volume</th>
-              <th>Risk</th>
+              <th>Prev Close</th>
+              <th>Latest Extended</th>
+              <th>Gap %</th>
+              <th>PreMkt Chg %</th>
+              <th>Rel Vol</th>
             </tr>
           </thead>
           <tbody>
             {% for s in report.analyses %}
             <tr>
               <td>{{ s.symbol }}</td>
-              <td>{{ s.signal }}</td>
-              <td>{{ s.confidence }}</td>
-              <td>{{ '%.2f'|format(s.market_data.price) if s.market_data.price is not none else 'UNAVAILABLE' }}</td>
-              <td>{{ s.market_data.trend }}</td>
-              <td>{{ '%.2f'|format(s.market_data.rsi14) if s.market_data.rsi14 is not none else 'UNAVAILABLE' }}</td>
+              <td>{{ '%.2f'|format(s.market_data.previous_close) if s.market_data.previous_close is not none else 'UNAVAILABLE' }}</td>
+              <td>{{ '%.2f'|format(s.market_data.latest_extended_price) if s.market_data.latest_extended_price is not none else 'UNAVAILABLE' }}</td>
+              <td>{{ '%.2f'|format(s.market_data.gap_pct) if s.market_data.gap_pct is not none else 'UNAVAILABLE' }}</td>
+              <td>{{ '%.2f'|format(s.market_data.premarket_change_pct) if s.market_data.premarket_change_pct is not none else 'UNAVAILABLE' }}</td>
               <td>{{ '%.2f'|format(s.market_data.relative_volume) if s.market_data.relative_volume is not none else 'UNAVAILABLE' }}</td>
-              <td>{{ s.risk_classification }}</td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        <p class="risk">Timestamp uses latest provider availability and may be delayed.</p>
       </div>
 
       <div class="section">
-        <h2>Individual Stock Cards</h2>
+        <h2>Fixed Six Stocks</h2>
         <div class="grid">
-          {% for s in report.analyses %}
+          {% for s in fixed_analyses %}
           <div class="card">
-            <h3>{{ s.symbol }} - {{ s.signal }}</h3>
-            <p><strong>Thesis:</strong> {{ s.one_liner }}</p>
-            <p><strong>Catalysts:</strong> {{ s.intelligence.upcoming_catalysts|join('; ') if s.intelligence.upcoming_catalysts else 'UNAVAILABLE' }}</p>
-            <p><strong>Risks:</strong> {{ s.main_reason }}</p>
-            <p class="mono"><strong>Technical:</strong> trend={{ s.market_data.trend }}, support={{ s.battle_plan.key_support }}, resistance={{ s.battle_plan.key_resistance }}</p>
-            <p class="mono"><strong>Entry:</strong> {{ s.battle_plan.entry_area }}</p>
-            <p class="mono"><strong>Target:</strong> {{ s.battle_plan.target_area }}</p>
-            <p class="mono"><strong>Invalidation:</strong> {{ s.battle_plan.invalidation }}</p>
-            <p><strong>Confidence:</strong> {{ s.confidence }}</p>
+            <h3>{{ s.symbol }} <span class="signal-{{ s.signal }}">{{ s.signal }}</span></h3>
+            <p><strong>Horizon:</strong> {{ s.trading_horizon }} | <strong>Setup:</strong> {{ s.setup_score }}</p>
+            <p><strong>Why:</strong> {{ s.main_reason }}</p>
+            <p class="mono">Trend={{ s.market_data.trend }} RSI={{ '%.1f'|format(s.market_data.rsi14) if s.market_data.rsi14 is not none else 'UNAVAILABLE' }} RVOL={{ '%.2f'|format(s.market_data.relative_volume) if s.market_data.relative_volume is not none else 'UNAVAILABLE' }}</p>
           </div>
           {% endfor %}
         </div>
       </div>
 
       <div class="section">
-        <h2>Opportunity Section</h2>
-        <p><strong>Top 3 LONG</strong>: {% for s in bullish %}{{ s.symbol }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
-        <p><strong>Top 3 SHORT</strong>: {% for s in bearish %}{{ s.symbol }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
-        <p><strong>Best overall setup</strong>: {{ report.best_overall }}</p>
+        <h2>Dynamic Three Stocks</h2>
+        <div class="grid">
+          {% for s in dynamic_analyses %}
+          <div class="card">
+            <h3>{{ s.symbol }} <span class="signal-{{ s.signal }}">{{ s.signal }}</span></h3>
+            <p><strong>Horizon:</strong> {{ s.trading_horizon }} | <strong>Setup:</strong> {{ s.setup_score }}</p>
+            <p><strong>Alignment:</strong> {{ s.market_alignment }}</p>
+            <p><strong>Invalidation:</strong> {{ s.battle_plan.invalidation }}</p>
+            <p class="mono">VWAP={{ '%.2f'|format(s.market_data.vwap) if s.market_data.vwap is not none else 'UNAVAILABLE' }} OR={{ '%.2f'|format(s.market_data.opening_range_low) if s.market_data.opening_range_low is not none else 'UNAVAILABLE' }}-{{ '%.2f'|format(s.market_data.opening_range_high) if s.market_data.opening_range_high is not none else 'UNAVAILABLE' }}</p>
+          </div>
+          {% endfor %}
+        </div>
       </div>
 
-      <div class="risk">
-        Automated research report only. No brokerage execution. Not investment advice.
+      <div class="section">
+        <h2>Day Trading Watchlist</h2>
+        {% if report.day_trading_watchlist %}
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Direction</th>
+              <th>Horizon</th>
+              <th>Setup</th>
+              <th>Key Confirmation</th>
+              <th>Invalidation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in report.day_trading_watchlist %}
+            <tr>
+              <td>{{ s.symbol }}</td>
+              <td>{{ s.signal }}</td>
+              <td>{{ s.trading_horizon }}</td>
+              <td>{{ s.setup_score }}</td>
+              <td>{{ s.market_data.breakout_state }}</td>
+              <td>{{ s.battle_plan.invalidation }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p>NO HIGH-CONVICTION SETUP</p>
+        {% endif %}
+      </div>
+
+      <div class="section">
+        <h2>Top Opportunities</h2>
+        <p><strong>Best LONG:</strong> {{ report.best_long }}</p>
+        <p><strong>Best SHORT:</strong> {{ report.best_short }}</p>
+        <p><strong>Best Overall:</strong> {{ report.best_overall }}</p>
+      </div>
+
+      <div class="section risk">
+        Automated research report only. No brokerage execution. This report may use delayed data. Not investment advice.
       </div>
     </div>
   </body>

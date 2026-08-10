@@ -22,6 +22,10 @@ def _fetch_return(symbol: str) -> float | None:
 
 
 def build_market_regime() -> MarketRegime:
+    nq_fut = _fetch_return("NQ=F")
+    es_fut = _fetch_return("ES=F")
+    ym_fut = _fetch_return("YM=F")
+
     indicators = {
         "timestamp_utc": datetime.now(UTC).isoformat(),
         "nasdaq_change_pct": _fetch_return("^IXIC"),
@@ -31,7 +35,17 @@ def build_market_regime() -> MarketRegime:
         "us10y_yield_change_pct": _fetch_return("^TNX"),
         "semiconductor_etf_change_pct": _fetch_return("SOXX"),
         "ai_proxy_etf_change_pct": _fetch_return("BOTZ"),
+        "nq_futures_change_pct": nq_fut,
+        "es_futures_change_pct": es_fut,
+        "ym_futures_change_pct": ym_fut,
     }
+
+    futures_vector = [x for x in (nq_fut, es_fut, ym_fut) if x is not None]
+    if not futures_vector:
+        indicators["market_futures_direction"] = "UNAVAILABLE"
+    else:
+        avg = sum(futures_vector) / len(futures_vector)
+        indicators["market_futures_direction"] = "UP" if avg > 0.15 else "DOWN" if avg < -0.15 else "FLAT"
 
     risk_score = 0
     growth_score = 0
@@ -53,12 +67,12 @@ def build_market_regime() -> MarketRegime:
         growth_score += 1
 
     if growth_score - risk_score >= 2:
-        label = "RISK-ON"
+        label = "RISK_ON"
         bias = "BULLISH"
         catalyst = "Broad equity strength with semiconductor participation"
         main_risk = "Crowded momentum unwind"
     elif risk_score - growth_score >= 2:
-        label = "RISK-OFF"
+        label = "RISK_OFF"
         bias = "BEARISH"
         catalyst = "Defensive positioning and volatility pressure"
         main_risk = "Sharp bear market rallies"

@@ -13,11 +13,14 @@ def _analysis(symbol: str, long_score: float, short_score: float) -> StockAnalys
         symbol=symbol,
         name=symbol,
         signal="LONG",
+        trading_horizon="SWING",
+        market_alignment="MARKET_ALIGNED",
+        setup_score=int(max(long_score, short_score) * 100),
         confidence="LOW",
         one_liner="x",
         main_reason="x",
         risk_classification="LOW",
-        market_data=MarketData(symbol=symbol),
+        market_data=MarketData(symbol=symbol, relative_volume=1.3),
         intelligence=IntelligenceBlock(),
         battle_plan=BattlePlan("a", "b", "c", "d", "e", "f", "g", "h"),
         score=ScoreBreakdown(
@@ -41,7 +44,8 @@ def test_select_dynamic_excludes_fixed_and_keeps_top3():
         _analysis("META", 0.3, 0.4),
     ]
 
-    out = select_dynamic_opportunities(data, fixed, top_n=3)
+    data[-1].market_data.relative_volume = 0.6
+    out = select_dynamic_opportunities(data, fixed, top_n=3, min_setup_score=45, min_relative_volume=1.0)
     symbols = [x.symbol for x in out]
     assert "AMD" not in symbols
     assert "NVDA" not in symbols

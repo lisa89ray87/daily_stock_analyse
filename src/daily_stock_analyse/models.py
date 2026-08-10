@@ -4,14 +4,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
-Signal = Literal["LONG", "SHORT", "HOLD", "SELL", "NO TRADE"]
+Signal = Literal["LONG", "SHORT", "WAIT", "NO_TRADE"]
 RiskClass = Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
+TradingHorizon = Literal["DAY_TRADE", "SWING", "NO_TRADE"]
+MarketAlignment = Literal["MARKET_ALIGNED", "MARKET_COUNTERTREND", "UNKNOWN"]
 
 
 @dataclass
 class MarketData:
     symbol: str
     price: float | None = None
+    previous_close: float | None = None
+    latest_extended_price: float | None = None
+    gap_pct: float | None = None
+    premarket_change_pct: float | None = None
+    premarket_volume: float | None = None
     day_change_pct: float | None = None
     trend: str = "UNAVAILABLE"
     sma20: float | None = None
@@ -24,16 +31,23 @@ class MarketData:
     avg_volume_20d: float | None = None
     relative_volume: float | None = None
     volatility_20d: float | None = None
+    atr14: float | None = None
+    vwap: float | None = None
+    opening_range_high: float | None = None
+    opening_range_low: float | None = None
     support: float | None = None
     resistance: float | None = None
     recent_structure: str = "UNAVAILABLE"
     breakout_state: str = "UNAVAILABLE"
     regular_session_timestamp: str | None = None
+    premarket_timestamp: str | None = None
+    intraday_timestamp: str | None = None
     overnight_info: str = "UNAVAILABLE"
     premarket_info: str = "UNAVAILABLE"
     regular_session_info: str = "UNAVAILABLE"
     provider: str = "unknown"
     data_timestamp: str | None = None
+    delayed_note: str = "Latest available provider data (may be delayed)."
 
 
 @dataclass
@@ -70,6 +84,9 @@ class StockAnalysis:
     symbol: str
     name: str
     signal: Signal
+    trading_horizon: TradingHorizon
+    market_alignment: MarketAlignment
+    setup_score: int
     confidence: str
     one_liner: str
     main_reason: str
@@ -99,7 +116,10 @@ class DailyAnalysisReport:
     dynamic_symbols: list[str]
     market_regime: MarketRegime
     analyses: list[StockAnalysis]
+    day_trading_watchlist: list[StockAnalysis]
     top3_bullish: list[StockAnalysis]
     top3_bearish: list[StockAnalysis]
+    best_long: str
+    best_short: str
     best_overall: str
     notes: list[str] = field(default_factory=list)

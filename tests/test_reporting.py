@@ -18,6 +18,9 @@ def _sample_report() -> DailyAnalysisReport:
         symbol="AMD",
         name="AMD",
         signal="LONG",
+        trading_horizon="SWING",
+        market_alignment="MARKET_ALIGNED",
+        setup_score=78,
         confidence="MEDIUM",
         one_liner="Sample",
         main_reason="Sample reason",
@@ -41,8 +44,11 @@ def _sample_report() -> DailyAnalysisReport:
             indicators={},
         ),
         analyses=[analysis],
+        day_trading_watchlist=[analysis],
         top3_bullish=[analysis],
         top3_bearish=[analysis],
+        best_long="AMD (LONG)",
+        best_short="NO HIGH-CONVICTION SETUP",
         best_overall="AMD (LONG)",
     )
 

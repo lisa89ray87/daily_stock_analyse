@@ -23,9 +23,11 @@ class YFinanceMarketDataProvider(MarketDataProvider):
 
         close = hist["Close"].dropna()
         volume = hist["Volume"].dropna() if "Volume" in hist else pd.Series(dtype=float)
-        last_price = float(close.iloc[-1])
+        high = hist["High"].dropna() if "High" in hist else pd.Series(dtype=float)
+        low = hist["Low"].dropna() if "Low" in hist else pd.Series(dtype=float)
 
-        md.price = last_price
+        md.price = float(close.iloc[-1])
+        md.previous_close = float(close.iloc[-2]) if len(close) >= 2 else None
         md.sma20 = _safe_series_mean(close, 20)
         md.sma50 = _safe_series_mean(close, 50)
         md.sma200 = _safe_series_mean(close, 200)
@@ -45,6 +47,8 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         if len(returns) >= 20:
             md.volatility_20d = float(returns.tail(20).std() * (252 ** 0.5))
 
+        md.atr14 = _compute_atr(high, low, close, 14)
+
         md.support = _rolling_support(close, 20)
         md.resistance = _rolling_resistance(close, 20)
 
@@ -59,7 +63,11 @@ class YFinanceMarketDataProvider(MarketDataProvider):
                 md.trend = "RANGE"
                 md.recent_structure = "Range-bound"
 
-        if md.resistance and md.price and md.price > md.resistance * 0.995:
+        if md.resistance and md.price and md.price > md.resistance * 1.002:
+            md.breakout_state = "BREAKOUT"
+        elif md.support and md.price and md.price < md.support * 0.998:
+            md.breakout_state = "BREAKDOWN"
+        elif md.resistance and md.price and md.price > md.resistance * 0.995:
             md.breakout_state = "NEAR BREAKOUT"
         elif md.support and md.price and md.price < md.support * 1.005:
             md.breakout_state = "NEAR BREAKDOWN"
@@ -67,24 +75,54 @@ class YFinanceMarketDataProvider(MarketDataProvider):
             md.breakout_state = "NO CLEAR BREAK"
 
         info = ticker.fast_info or {}
-        premarket = info.get("pre_market_price")
-        previous_close = info.get("previous_close")
-        day_high = info.get("day_high")
-        day_low = info.get("day_low")
+        premarket = _float_or_none(info.get("pre_market_price"))
+        previous_close = _float_or_none(info.get("previous_close"))
+        if previous_close is not None:
+            md.previous_close = previous_close
+        md.latest_extended_price = premarket if premarket is not None else md.price
+
+        if md.previous_close and md.latest_extended_price:
+            md.gap_pct = ((md.latest_extended_price - md.previous_close) / md.previous_close) * 100.0
+        if md.previous_close and premarket:
+            md.premarket_change_pct = ((premarket - md.previous_close) / md.previous_close) * 100.0
+
+        md.premarket_volume = _float_or_none(info.get("pre_market_volume"))
+
+        day_high = _float_or_none(info.get("day_high"))
+        day_low = _float_or_none(info.get("day_low"))
 
         md.overnight_info = (
-            f"Previous close: {previous_close:.2f}" if isinstance(previous_close, (int, float)) else "UNAVAILABLE"
+            f"Previous close: {md.previous_close:.2f}" if isinstance(md.previous_close, (int, float)) else "UNAVAILABLE"
         )
         md.premarket_info = (
-            f"Pre-market: {premarket:.2f}" if isinstance(premarket, (int, float)) else "UNAVAILABLE"
+            f"Extended/latest: {md.latest_extended_price:.2f}" if isinstance(md.latest_extended_price, (int, float)) else "UNAVAILABLE"
         )
         if isinstance(day_high, (int, float)) and isinstance(day_low, (int, float)):
             md.regular_session_info = f"Session range: {day_low:.2f} - {day_high:.2f}"
         else:
             md.regular_session_info = "UNAVAILABLE"
 
-        md.regular_session_timestamp = datetime.now(UTC).isoformat()
-        md.data_timestamp = datetime.now(UTC).isoformat()
+        intraday = ticker.history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+        if not intraday.empty and "Close" in intraday and "Volume" in intraday:
+            intraday = intraday.dropna(subset=["Close", "Volume"])
+            if not intraday.empty:
+                price_x_vol = intraday["Close"] * intraday["Volume"]
+                cum_vol = intraday["Volume"].cumsum()
+                vwap_series = price_x_vol.cumsum() / cum_vol.replace(0, pd.NA)
+                if not vwap_series.dropna().empty:
+                    md.vwap = float(vwap_series.dropna().iloc[-1])
+
+                regular = intraday.between_time("09:30", "10:00")
+                if not regular.empty and "High" in regular and "Low" in regular:
+                    md.opening_range_high = float(regular["High"].max())
+                    md.opening_range_low = float(regular["Low"].min())
+
+                md.intraday_timestamp = datetime.now(UTC).isoformat()
+
+        now_ts = datetime.now(UTC).isoformat()
+        md.regular_session_timestamp = now_ts
+        md.premarket_timestamp = now_ts
+        md.data_timestamp = now_ts
         return md
 
 
@@ -114,6 +152,12 @@ class YFinanceNewsProvider(NewsProvider):
 
         out.interpretation.append("News reflects available provider headlines only")
         return out
+
+
+def _float_or_none(value) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _safe_series_mean(series: pd.Series, window: int) -> float | None:
@@ -166,3 +210,21 @@ def _rolling_resistance(series: pd.Series, window: int) -> float | None:
     if len(series) < window:
         return None
     return float(series.tail(window).max())
+
+
+def _compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> float | None:
+    if high.empty or low.empty or close.empty or len(close) <= period:
+        return None
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = tr.rolling(period).mean().dropna()
+    if atr.empty:
+        return None
+    return float(atr.iloc[-1])

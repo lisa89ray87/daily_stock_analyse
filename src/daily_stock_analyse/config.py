@@ -27,7 +27,13 @@ DEFAULT_CANDIDATE_UNIVERSE = [
     "CSCO",
     "NFLX",
     "INTU",
-    "SHOP",
+    "ORCL",
+    "ANET",
+    "TSM",
+    "AMAT",
+    "LRCX",
+    "KLAC",
+    "DELL",
     "UBER",
     "PANW",
     "CRWD",
@@ -49,6 +55,12 @@ class AppConfig:
     candidate_universe: list[str]
     score_weights: dict[str, float]
     schedule_utc_cron: str
+    min_setup_score: int
+    min_relative_volume: float
+    day_trade_threshold: int
+    short_threshold: float
+    long_threshold: float
+    dynamic_count: int
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -56,6 +68,26 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _load_watchlist_config(base_path: Path) -> tuple[list[str], list[str], dict[str, float]]:
@@ -109,4 +141,10 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         candidate_universe=universe,
         score_weights=weights,
         schedule_utc_cron=os.getenv("DAILY_REPORT_CRON_UTC", "0 23 * * 1-5"),
+        min_setup_score=_env_int("MIN_SETUP_SCORE", 60),
+        min_relative_volume=_env_float("MIN_RELATIVE_VOLUME", 1.15),
+        day_trade_threshold=_env_int("DAY_TRADE_THRESHOLD", 72),
+        short_threshold=_env_float("SHORT_THRESHOLD", 0.28),
+        long_threshold=_env_float("LONG_THRESHOLD", 0.28),
+        dynamic_count=_env_int("DYNAMIC_COUNT", 3),
     )

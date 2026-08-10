@@ -42,7 +42,7 @@ Configured in `config/watchlist.json`.
 The system selects exactly 3 additional US/Nasdaq opportunities from a configurable candidate universe.
 
 - Not permanently hard-coded to the same 3 symbols
-- Supports LONG, SHORT, HOLD, SELL, and NO TRADE outcomes
+- Supports LONG, SHORT, WAIT, and NO_TRADE outcomes
 - Prioritizes conviction from score spread and magnitude
 
 ## Scoring Model
@@ -77,7 +77,7 @@ Prompt constraints enforce:
 - FACT vs INTERPRETATION separation
 - Admitting uncertainty
 - LONG and SHORT allowed
-- NO TRADE allowed
+- NO_TRADE allowed
 
 If AI call fails, deterministic data-driven report is still produced.
 
@@ -92,6 +92,15 @@ Required env vars:
 - `RESEND_API_KEY`
 - `EMAIL_FROM`
 - `EMAIL_TO` (defaults to `raymond87tan@gmail.com`)
+
+Day-trading and setup thresholds:
+
+- `MIN_SETUP_SCORE`
+- `MIN_RELATIVE_VOLUME`
+- `DAY_TRADE_THRESHOLD`
+- `SHORT_THRESHOLD`
+- `LONG_THRESHOLD`
+- `DYNAMIC_COUNT`
 
 Disable sending while still generating report:
 

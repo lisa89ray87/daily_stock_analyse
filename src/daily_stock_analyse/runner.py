@@ -31,12 +31,18 @@ def run_analysis(base_path: Path | None = None) -> int:
 
     for symbol in all_symbols:
         try:
-            analyses.append(_analyze_symbol(symbol, cfg, market_provider, news_provider))
+            analyses.append(_analyze_symbol(symbol, cfg, market_regime.label, market_provider, news_provider))
         except Exception as exc:
             errors.append(f"{symbol}: analysis failed ({exc})")
             analyses.append(_unavailable_analysis(symbol, f"Provider failure: {exc}"))
 
-    dynamic = select_dynamic_opportunities(analyses, cfg.fixed_watchlist, top_n=3)
+    dynamic = select_dynamic_opportunities(
+        analyses,
+        cfg.fixed_watchlist,
+        top_n=cfg.dynamic_count,
+        min_setup_score=max(40, cfg.min_setup_score - 10),
+        min_relative_volume=cfg.min_relative_volume,
+    )
 
     selected_symbols = {x.symbol for x in dynamic} | set(cfg.fixed_watchlist)
     selected_analyses = [x for x in analyses if x.symbol in selected_symbols]
@@ -44,7 +50,15 @@ def run_analysis(base_path: Path | None = None) -> int:
     bullish_ranked = sorted(selected_analyses, key=lambda x: x.score.long_score, reverse=True)[:3]
     bearish_ranked = sorted(selected_analyses, key=lambda x: x.score.short_score, reverse=True)[:3]
 
-    best = _best_overall(selected_analyses)
+    day_trade_watchlist = [
+        x
+        for x in selected_analyses
+        if x.trading_horizon == "DAY_TRADE" and x.signal in {"LONG", "SHORT"} and x.setup_score >= cfg.day_trade_threshold
+    ]
+
+    best_long = _best_for_direction(selected_analyses, "LONG", cfg.min_setup_score)
+    best_short = _best_for_direction(selected_analyses, "SHORT", cfg.min_setup_score)
+    best_overall = _best_overall(selected_analyses, cfg.min_setup_score)
 
     report = DailyAnalysisReport(
         generated_at_utc=datetime.now(UTC),
@@ -53,9 +67,12 @@ def run_analysis(base_path: Path | None = None) -> int:
         dynamic_symbols=[x.symbol for x in dynamic],
         market_regime=market_regime,
         analyses=selected_analyses,
+        day_trading_watchlist=day_trade_watchlist,
         top3_bullish=bullish_ranked,
         top3_bearish=bearish_ranked,
-        best_overall=best,
+        best_long=best_long,
+        best_short=best_short,
+        best_overall=best_overall,
         notes=errors,
     )
 
@@ -99,7 +116,7 @@ def run_analysis(base_path: Path | None = None) -> int:
     return 0
 
 
-def _analyze_symbol(symbol: str, cfg: AppConfig, market_provider, news_provider) -> StockAnalysis:
+def _analyze_symbol(symbol: str, cfg: AppConfig, regime_label: str, market_provider, news_provider) -> StockAnalysis:
     md = market_provider.get_market_data(symbol)
     intelligence = news_provider.get_news(symbol)
 
@@ -107,7 +124,7 @@ def _analyze_symbol(symbol: str, cfg: AppConfig, market_provider, news_provider)
         intelligence.upcoming_catalysts = ["Monitor next earnings window and sector headlines"]
 
     score = score_stock(md, intelligence, cfg.score_weights)
-    decision = decide_signal(score)
+    decision = decide_signal(score, md, cfg, regime_label)
 
     risk_class = "UNKNOWN"
     if md.volatility_20d is not None:
@@ -124,6 +141,9 @@ def _analyze_symbol(symbol: str, cfg: AppConfig, market_provider, news_provider)
         symbol=symbol,
         name=symbol,
         signal=decision.signal,
+        trading_horizon=decision.trading_horizon,
+        market_alignment=decision.market_alignment,
+        setup_score=decision.setup_score,
         confidence=decision.confidence,
         one_liner=f"{symbol} is rated {decision.signal} based on latest available technical/news inputs.",
         main_reason=decision.reason,
@@ -135,6 +155,8 @@ def _analyze_symbol(symbol: str, cfg: AppConfig, market_provider, news_provider)
         source_flags={
             "market_data_available": md.price is not None,
             "news_available": intelligence.news_available,
+            "intraday_available": md.vwap is not None or md.opening_range_high is not None,
+            "premarket_available": md.latest_extended_price is not None,
         },
     )
 
@@ -192,8 +214,8 @@ def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
         bearish_scenario="UNAVAILABLE",
         key_support="UNAVAILABLE",
         key_resistance="UNAVAILABLE",
-        entry_area="NO TRADE",
-        target_area="NO TRADE",
+        entry_area="NO_TRADE",
+        target_area="NO_TRADE",
         invalidation="UNAVAILABLE",
         risk_reward_assessment="UNAVAILABLE",
     )
@@ -203,7 +225,10 @@ def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
     return StockAnalysis(
         symbol=symbol,
         name=symbol,
-        signal="NO TRADE",
+        signal="NO_TRADE",
+        trading_horizon="NO_TRADE",
+        market_alignment="UNKNOWN",
+        setup_score=0,
         confidence="LOW",
         one_liner="Insufficient data",
         main_reason=reason,
@@ -216,20 +241,28 @@ def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
     )
 
 
-def _best_overall(analyses: list[StockAnalysis]) -> str:
+def _best_for_direction(analyses: list[StockAnalysis], direction: str, min_setup_score: int) -> str:
+    eligible = [x for x in analyses if x.signal == direction and x.setup_score >= min_setup_score]
+    if not eligible:
+        return "NO HIGH-CONVICTION SETUP"
     ranked = sorted(
-        analyses,
-        key=lambda x: max(x.score.long_score, x.score.short_score),
+        eligible,
+        key=lambda x: (x.setup_score, max(x.score.long_score, x.score.short_score)),
         reverse=True,
     )
-    if not ranked:
-        return "NO HIGH-CONVICTION SETUP"
+    return f"{ranked[0].symbol} ({ranked[0].signal})"
 
-    best = ranked[0]
-    conviction = max(best.score.long_score, best.score.short_score)
-    if conviction < 0.30:
+
+def _best_overall(analyses: list[StockAnalysis], min_setup_score: int) -> str:
+    eligible = [x for x in analyses if x.signal in {"LONG", "SHORT"} and x.setup_score >= min_setup_score]
+    if not eligible:
         return "NO HIGH-CONVICTION SETUP"
-    return f"{best.symbol} ({best.signal})"
+    ranked = sorted(
+        eligible,
+        key=lambda x: (x.setup_score, max(x.score.long_score, x.score.short_score)),
+        reverse=True,
+    )
+    return f"{ranked[0].symbol} ({ranked[0].signal})"
 
 
 def main() -> int:
