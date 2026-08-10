@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from src.daily_stock_analyse.config import AppConfig
 from src.daily_stock_analyse.live_alerts import (
     _determine_event,
+    _is_live_confirmable,
     _render_telegram_message,
     _send_telegram_alerts,
     _trade_levels_from_intraday_structure,
@@ -178,7 +179,7 @@ def _triggered_long() -> StockAnalysis:
 
 
 def _triggered_short() -> StockAnalysis:
-    bars = _bars("down", start=106.0)
+    bars = _bars("down", start=102.2)
     support = float(bars[-2]["close"]) - 0.05
     bars[-1]["close"] = support - 0.30
     bars[-1]["low"] = support - 0.35
@@ -472,3 +473,195 @@ def test_blocked_alert_not_dispatched_to_telegram():
 
     assert send_mock.call_count == 0
     assert sent == 0
+
+
+def test_trigger_evidence_creation_contains_structure():
+    cfg = _cfg()
+    a = _triggered_long()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    ok, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
+    evidence = meta.get("trigger_evidence")
+    assert ok is True
+    assert evidence is not None
+    assert evidence.confirmed is True
+    assert evidence.direction == "LONG"
+    assert isinstance(evidence.trigger_type, str)
+
+
+def test_long_trigger_confirmation_evidence():
+    cfg = _cfg()
+    a = _triggered_long()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
+    evidence = meta["trigger_evidence"]
+    assert evidence.confirmed is True
+    assert evidence.direction == "LONG"
+    assert evidence.trigger_price is not None
+
+
+def test_short_trigger_confirmation_evidence():
+    cfg = _cfg()
+    a = _triggered_short()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
+    evidence = meta["trigger_evidence"]
+    assert evidence.confirmed is True
+    assert evidence.direction == "SHORT"
+    assert evidence.trigger_price is not None
+
+
+def test_trigger_evidence_passed_into_eligibility():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle(state="TRIGGER_STILL_VALID", detail="ok")
+        _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert lifecycle_mock.call_count == 1
+    evidence_arg = lifecycle_mock.call_args[0][0]
+    assert evidence_arg.confirmed is True
+    assert evidence_arg.direction == "LONG"
+
+
+def test_entry_triggered_confirmed_trigger_reaches_eligibility_not_entry_not_confirmed():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_setup_state"] == "ENTRY_TRIGGERED"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] != "ENTRY_NOT_CONFIRMED"
+
+
+def test_entry_triggered_confirmed_then_invalidated_returns_trigger_invalidated():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.invalidation_price = float(a.market_data.price or 0.0) + 0.05
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_setup_state"] == "ENTRY_TRIGGERED"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_INVALIDATED"
+
+
+def test_trigger_expiry_returns_trigger_expired():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._evaluate_trigger_lifecycle") as lifecycle_mock:
+        from src.daily_stock_analyse.live_alerts import TriggerLifecycle
+
+        lifecycle_mock.return_value = TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reference drift")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "TRIGGER_EXPIRED"
+
+
+def test_trigger_direction_consistency():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    _, _, meta_long = _is_live_confirmable(_triggered_long(), cfg, opening_range_window=False, now_utc=now)
+    _, _, meta_short = _is_live_confirmable(_triggered_short(), cfg, opening_range_window=False, now_utc=now)
+    assert meta_long["trigger_evidence"].direction == "LONG"
+    assert meta_short["trigger_evidence"].direction == "SHORT"
+
+
+def test_trigger_price_consistency():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
+    evidence = meta["trigger_evidence"]
+    assert isinstance(evidence.trigger_price, float)
+    assert abs(evidence.trigger_price - float(a.market_data.price or 0.0)) < 1e-6
+
+
+def test_reference_level_consistency():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    _, _, meta = _is_live_confirmable(_triggered_long(), cfg, opening_range_window=False, now_utc=now)
+    evidence = meta["trigger_evidence"]
+    assert evidence.reference_level is not None
+
+
+def test_valid_trigger_and_levels_and_rr_is_alert_eligible():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        from src.daily_stock_analyse.live_alerts import TradeLevels
+
+        levels_mock.return_value = TradeLevels(
+            direction="SHORT",
+            entry=100.0,
+            stop=101.0,
+            target1=98.0,
+            target2=97.0,
+            risk_reward=2.0,
+            source="swing_structure",
+            detail=None,
+        )
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_valid_trigger_low_rvol_is_blocked_rvol_too_low():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+    a.market_data.intraday_rvol = 1.0
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RVOL_TOO_LOW"
+
+
+def test_valid_trigger_low_rr_is_blocked_rr_too_low():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+    entry = float(a.market_data.price or 0.0)
+    a.battle_plan.target_1 = entry - 0.30
+    a.battle_plan.target_2 = entry - 0.60
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RR_TOO_LOW"
+
+
+def test_valid_trigger_cooldown_blocked():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {
+        "symbols": {
+            "PLTR": {
+                "last_signal": "WAIT",
+                "last_alert_type": "WAIT_TO_SHORT",
+                "last_alert_timestamp": (now - timedelta(minutes=5)).isoformat(),
+            }
+        }
+    }
+    event = _determine_event(_triggered_short(), state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "COOLDOWN"
+
+
+def test_valid_trigger_duplicate_position_blocked():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "position_state": "IN_POSITION", "active_direction": "SHORT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    event = _determine_event(_triggered_short(), state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DUPLICATE_POSITION"

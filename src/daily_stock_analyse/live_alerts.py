@@ -23,6 +23,8 @@ ALERT_REASON_COOLDOWN = "COOLDOWN"
 ALERT_REASON_DUPLICATE_POSITION = "DUPLICATE_POSITION"
 ALERT_REASON_INVALID_RISK_LEVELS = "INVALID_RISK_LEVELS"
 ALERT_REASON_NO_ALERT = "NO_ALERT"
+ALERT_REASON_TRIGGER_INVALIDATED = "TRIGGER_INVALIDATED"
+ALERT_REASON_TRIGGER_EXPIRED = "TRIGGER_EXPIRED"
 
 MIN_RISK_REWARD = 1.5
 
@@ -53,6 +55,24 @@ class TradeLevels:
     risk_reward: float | None
     source: str
     detail: str | None = None
+
+
+@dataclass
+class TriggerEvidence:
+    confirmed: bool
+    direction: str
+    trigger_type: str
+    trigger_price: float | None
+    reference_level: float | None
+    current_price: float | None
+    timestamp: str | None
+    detail: str
+
+
+@dataclass
+class TriggerLifecycle:
+    state: str
+    detail: str
 
 
 def run_live_alerts(base_path: Path | None = None) -> int:
@@ -291,6 +311,93 @@ def _risk_reward_ratio_from_analysis(analysis: StockAnalysis) -> float | None:
     return None
 
 
+def _trigger_type_from_label(label: str) -> str:
+    mapping = {
+        "Breakout above resistance": "RESISTANCE_BREAK",
+        "Opening-range breakout": "OPENING_RANGE_BREAKOUT",
+        "VWAP reclaim and hold": "RECLAIM",
+        "Bullish continuation retest": "RETEST",
+        "Breakdown below support": "SUPPORT_BREAK",
+        "Opening-range breakdown": "OPENING_RANGE_BREAKDOWN",
+        "VWAP rejection and hold": "BREAKDOWN",
+        "Bearish continuation retest": "RETEST",
+    }
+    return mapping.get(label, "BREAKOUT")
+
+
+def _build_trigger_evidence(
+    *,
+    confirmed: bool,
+    direction: str,
+    trigger: str,
+    trigger_price: float | None,
+    reference_level: float | None,
+    current_price: float | None,
+    timestamp: str | None,
+    detail: str,
+) -> TriggerEvidence:
+    if not confirmed:
+        return TriggerEvidence(
+            confirmed=False,
+            direction=direction,
+            trigger_type="",
+            trigger_price=trigger_price,
+            reference_level=reference_level,
+            current_price=current_price,
+            timestamp=timestamp,
+            detail=detail,
+        )
+
+    return TriggerEvidence(
+        confirmed=True,
+        direction=direction,
+        trigger_type=_trigger_type_from_label(trigger),
+        trigger_price=trigger_price,
+        reference_level=reference_level,
+        current_price=current_price,
+        timestamp=timestamp,
+        detail=detail,
+    )
+
+
+def _evaluate_trigger_lifecycle(evidence: TriggerEvidence, analysis: StockAnalysis) -> TriggerLifecycle:
+    if not evidence.confirmed:
+        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="Trigger evidence is not confirmed")
+
+    current_price = evidence.current_price
+    if not isinstance(current_price, (int, float)):
+        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="Current price unavailable for trigger lifecycle")
+
+    invalidation = analysis.battle_plan.invalidation_price
+    reference = evidence.reference_level
+    direction = evidence.direction
+
+    if direction == "LONG":
+        if isinstance(invalidation, (int, float)) and current_price <= invalidation:
+            return TriggerLifecycle(
+                state="TRIGGER_INVALIDATED",
+                detail=f"Price {current_price:.2f} <= invalidation {invalidation:.2f}",
+            )
+        if isinstance(reference, (int, float)) and evidence.trigger_type in {"RESISTANCE_BREAK", "OPENING_RANGE_BREAKOUT", "RECLAIM"} and current_price < reference:
+            return TriggerLifecycle(
+                state="TRIGGER_EXPIRED",
+                detail=f"Price {current_price:.2f} fell below trigger reference {reference:.2f}",
+            )
+    elif direction == "SHORT":
+        if isinstance(invalidation, (int, float)) and current_price >= invalidation:
+            return TriggerLifecycle(
+                state="TRIGGER_INVALIDATED",
+                detail=f"Price {current_price:.2f} >= invalidation {invalidation:.2f}",
+            )
+        if isinstance(reference, (int, float)) and evidence.trigger_type in {"SUPPORT_BREAK", "OPENING_RANGE_BREAKDOWN", "BREAKDOWN"} and current_price > reference:
+            return TriggerLifecycle(
+                state="TRIGGER_EXPIRED",
+                detail=f"Price {current_price:.2f} rose above trigger reference {reference:.2f}",
+            )
+
+    return TriggerLifecycle(state="TRIGGER_STILL_VALID", detail="Trigger remains valid")
+
+
 def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str, float | None]:
     ratio = _risk_reward_ratio_from_analysis(analysis)
     if ratio is None:
@@ -367,6 +474,7 @@ def _build_live_setup_assessment(
 
     price_confirmed = False
     trigger = "Unavailable"
+    trigger_reference_level: float | None = None
     confirmation = "No actionable trigger"
     waiting_reason = "waiting for breakout"
 
@@ -384,37 +492,45 @@ def _build_live_setup_assessment(
         if resistance is not None and prev_close is not None and prev_close <= resistance < close:
             price_confirmed = True
             trigger = "Breakout above resistance"
+            trigger_reference_level = resistance
             confirmation = "Resistance breakout confirmed"
         elif or_high is not None and prev_close is not None and prev_close <= or_high < close:
             price_confirmed = True
             trigger = "Opening-range breakout"
+            trigger_reference_level = or_high
             confirmation = "Opening-range breakout confirmed"
         elif vwap is not None and prev_close is not None and prev_close <= vwap < close and last_low is not None and last_low >= vwap * 0.998:
             price_confirmed = True
             trigger = "VWAP reclaim and hold"
+            trigger_reference_level = vwap
             confirmation = "VWAP reclaim confirmed"
         elif ctx["ema_fast"] is not None and ctx["ema_slow"] is not None and ctx["ema_fast"] > ctx["ema_slow"] and last_low is not None and close > ctx["ema_fast"]:
             if last_low <= ctx["ema_fast"] * 1.002:
                 price_confirmed = True
                 trigger = "Bullish continuation retest"
+                trigger_reference_level = ctx["ema_fast"]
                 confirmation = "EMA retest continuation confirmed"
     elif signal == "SHORT" and close is not None:
         if support is not None and prev_close is not None and prev_close >= support > close:
             price_confirmed = True
             trigger = "Breakdown below support"
+            trigger_reference_level = support
             confirmation = "Support breakdown confirmed"
         elif or_low is not None and prev_close is not None and prev_close >= or_low > close:
             price_confirmed = True
             trigger = "Opening-range breakdown"
+            trigger_reference_level = or_low
             confirmation = "Opening-range breakdown confirmed"
         elif vwap is not None and prev_close is not None and prev_close >= vwap > close and last_high is not None and last_high <= vwap * 1.002:
             price_confirmed = True
             trigger = "VWAP rejection and hold"
+            trigger_reference_level = vwap
             confirmation = "VWAP rejection confirmed"
         elif ctx["ema_fast"] is not None and ctx["ema_slow"] is not None and ctx["ema_fast"] < ctx["ema_slow"] and last_high is not None and close < ctx["ema_fast"]:
             if last_high >= ctx["ema_fast"] * 0.998:
                 price_confirmed = True
                 trigger = "Bearish continuation retest"
+                trigger_reference_level = ctx["ema_fast"]
                 confirmation = "EMA retest continuation confirmed"
 
     price_action_value = 0.0
@@ -500,6 +616,26 @@ def _build_live_setup_assessment(
     if setup_state == "NO_TRADE":
         state_reason = "insufficient intraday confirmation"
 
+    trigger_ts = None
+    if ctx.get("bars"):
+        try:
+            trigger_ts = ctx["bars"][-1]["ts"].isoformat()
+        except Exception:
+            trigger_ts = md.intraday_timestamp or md.data_timestamp
+    else:
+        trigger_ts = md.intraday_timestamp or md.data_timestamp
+
+    trigger_evidence = _build_trigger_evidence(
+        confirmed=price_confirmed,
+        direction=signal,
+        trigger=trigger,
+        trigger_price=close if isinstance(close, (int, float)) else md.price,
+        reference_level=trigger_reference_level,
+        current_price=close if isinstance(close, (int, float)) else md.price,
+        timestamp=trigger_ts,
+        detail=confirmation if price_confirmed else waiting_reason,
+    )
+
     return {
         "phase": phase,
         "components": components,
@@ -514,6 +650,7 @@ def _build_live_setup_assessment(
         "opening_range_status": opening_range_status,
         "close": close,
         "rvol_quality": rvol_quality,
+        "trigger_evidence": trigger_evidence,
     }
 
 
@@ -831,6 +968,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
             "state_reason": setup_assessment.get("state_reason"),
             "vwap_status": setup_assessment.get("vwap_status"),
             "opening_range_status": setup_assessment.get("opening_range_status"),
+            "trigger_evidence": setup_assessment.get("trigger_evidence"),
         }
     )
 
@@ -868,7 +1006,7 @@ def _evaluate_alert_eligibility(
     rvol_value = v4.get("rvol")
     rvol_quality = v4.get("rvol_quality", "UNAVAILABLE")
 
-    if not technical_ok or v4.get("setup_state") != "ENTRY_TRIGGERED":
+    if v4.get("setup_state") != "ENTRY_TRIGGERED":
         return (
             AlertEligibilityResult(
                 eligible=False,
@@ -889,6 +1027,49 @@ def _evaluate_alert_eligibility(
             None,
         )
 
+    trigger_evidence = v4.get("trigger_evidence")
+    if not isinstance(trigger_evidence, TriggerEvidence):
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_ENTRY_NOT_CONFIRMED,
+                direction=direction,
+                entry=None,
+                stop=None,
+                target1=None,
+                target2=None,
+                risk_reward=None,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="Trigger evidence missing for ENTRY_TRIGGERED setup",
+            ),
+            v4,
+            None,
+            None,
+        )
+
+    if not trigger_evidence.confirmed:
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_ENTRY_NOT_CONFIRMED,
+                direction=direction,
+                entry=None,
+                stop=None,
+                target1=None,
+                target2=None,
+                risk_reward=None,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="TriggerEvidence.confirmed is False",
+            ),
+            v4,
+            None,
+            None,
+        )
+
     candidate_event_type = "WAIT_TO_LONG" if direction == "LONG" else "WAIT_TO_SHORT"
 
     trade_levels = _trade_levels_from_intraday_structure(analysis, cfg)
@@ -897,6 +1078,49 @@ def _evaluate_alert_eligibility(
     target_1 = trade_levels.target1
     target_2 = trade_levels.target2
     rr_ratio = trade_levels.risk_reward
+
+    lifecycle = _evaluate_trigger_lifecycle(trigger_evidence, analysis)
+    v4["trigger_lifecycle"] = lifecycle
+    if lifecycle.state == "TRIGGER_INVALIDATED":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_TRIGGER_INVALIDATED,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=lifecycle.detail,
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+        )
+    if lifecycle.state == "TRIGGER_EXPIRED":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_TRIGGER_EXPIRED,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=lifecycle.detail,
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+        )
 
     if not _is_valid_geometry(direction, entry, stop, target_1):
         detail = trade_levels.detail or "Invalid risk levels"
@@ -1175,6 +1399,24 @@ def _determine_event(
             )
 
         if v4.get("setup_state") == "ENTRY_TRIGGERED":
+            trigger_evidence = v4.get("trigger_evidence")
+            if isinstance(trigger_evidence, TriggerEvidence) and trigger_evidence.confirmed:
+                trigger_price_text = f"{trigger_evidence.trigger_price:.2f}" if isinstance(trigger_evidence.trigger_price, (int, float)) else "UNAVAILABLE"
+                reference_text = f"{trigger_evidence.reference_level:.2f}" if isinstance(trigger_evidence.reference_level, (int, float)) else "UNAVAILABLE"
+                print(
+                    f"{analysis.symbol}: TRIGGER_CONFIRMED | Direction {trigger_evidence.direction} | "
+                    f"Type {trigger_evidence.trigger_type} | TriggerPrice {trigger_price_text} | "
+                    f"Reference {reference_text} | {trigger_evidence.detail}"
+                )
+
+            lifecycle = v4.get("trigger_lifecycle")
+            if isinstance(lifecycle, TriggerLifecycle) and lifecycle.state == "TRIGGER_INVALIDATED":
+                trigger_type = trigger_evidence.trigger_type if isinstance(trigger_evidence, TriggerEvidence) else "UNAVAILABLE"
+                print(f"{analysis.symbol}: TRIGGER_INVALIDATED | Direction {eligibility.direction} | Type {trigger_type} | {lifecycle.detail}")
+            elif isinstance(lifecycle, TriggerLifecycle) and lifecycle.state == "TRIGGER_EXPIRED":
+                trigger_type = trigger_evidence.trigger_type if isinstance(trigger_evidence, TriggerEvidence) else "UNAVAILABLE"
+                print(f"{analysis.symbol}: TRIGGER_EXPIRED | Direction {eligibility.direction} | Type {trigger_type} | {lifecycle.detail}")
+
             rvol_log = f"{eligibility.rvol:.2f}" if isinstance(eligibility.rvol, (int, float)) else eligibility.rvol_quality
             print(f"{analysis.symbol}: ENTRY_TRIGGERED | SetupScore {eligibility.setup_score} | RVOL {rvol_log}")
 
@@ -1273,6 +1515,11 @@ def _determine_event(
         ),
         "risk_reward_ratio": eligibility.risk_reward if eligibility is not None else _risk_reward_ratio_from_analysis(analysis),
         "trade_level_source": trade_levels.source if trade_levels is not None else "none",
+        "trigger_type": (
+            v4.get("trigger_evidence").trigger_type
+            if isinstance(v4.get("trigger_evidence"), TriggerEvidence)
+            else None
+        ),
     }
 
 
