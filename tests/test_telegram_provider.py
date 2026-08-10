@@ -86,6 +86,10 @@ def _sample_alert(event_type: str = "WAIT_TO_LONG", signal: str = "LONG") -> dic
         "level_unavailable_reason": None,
         "rvol": 1.85,
         "rvol_quality": "RELIABLE",
+        "risk_reward_ratio": 2.10,
+        "vwap_status": "AVAILABLE",
+        "opening_range_status": "AVAILABLE",
+        "setup_state": "ENTRY_TRIGGERED",
     }
 
 
@@ -110,6 +114,8 @@ def _analysis(symbol: str, signal: str, bias: str) -> StockAnalysis:
             symbol=symbol,
             price=102.0,
             relative_volume=2.0,
+            trend="UPTREND",
+            day_change_pct=1.5,
             vwap=100.0,
             opening_range_high=101.0,
             opening_range_low=99.0,
@@ -204,8 +210,12 @@ def test_correct_message_payload_and_parse_mode():
 def test_long_alert_formatting():
     msg = _render_telegram_message(_sample_alert(event_type="WAIT_TO_LONG", signal="LONG"), "America/New_York")
     assert "LONG ALERT" in msg
+    assert "Signal: <b>LONG</b>" in msg
     assert "Break above" in msg
     assert "RVOL: 1.85 (RELIABLE)" in msg
+    assert "VWAP: AVAILABLE" in msg
+    assert "Opening Range: AVAILABLE" in msg
+    assert "Risk/Reward: 2.10" in msg
 
 
 def test_long_alert_formatting_with_data_limited_rvol_quality():

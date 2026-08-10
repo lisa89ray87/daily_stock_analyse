@@ -192,7 +192,7 @@ def _price_action_confirmation(analysis: StockAnalysis, phase: str, strict: bool
     return False, "Unavailable", "Signal is not LONG/SHORT"
 
 
-def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str]:
+def _risk_reward_ratio_from_analysis(analysis: StockAnalysis) -> float | None:
     bp = analysis.battle_plan
     signal = analysis.signal
 
@@ -200,26 +200,177 @@ def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str]:
         risk = bp.entry_trigger_price - bp.invalidation_price
         reward = bp.target_1 - bp.entry_trigger_price
         if risk <= 0 or reward <= 0:
-            return False, "Risk/reward levels are invalid"
-        ratio = reward / max(risk, 1e-9)
-        return (ratio >= 1.0, f"Risk/reward below minimum ({ratio:.2f})" if ratio < 1.0 else "Risk/reward accepted")
+            return None
+        return reward / max(risk, 1e-9)
 
     if signal == "SHORT" and bp.entry_trigger_price is not None and bp.invalidation_price is not None and bp.target_1 is not None:
         risk = bp.invalidation_price - bp.entry_trigger_price
         reward = bp.entry_trigger_price - bp.target_1
         if risk <= 0 or reward <= 0:
-            return False, "Risk/reward levels are invalid"
-        ratio = reward / max(risk, 1e-9)
-        return (ratio >= 1.0, f"Risk/reward below minimum ({ratio:.2f})" if ratio < 1.0 else "Risk/reward accepted")
+            return None
+        return reward / max(risk, 1e-9)
 
     matches = re.findall(r"-?\d+(?:\.\d+)?", bp.risk_reward_assessment or "")
     if not matches:
-        return False, "Risk/reward unavailable"
+        return None
 
-    ratio = float(matches[-1])
+    return float(matches[-1])
+
+
+def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str, float | None]:
+    ratio = _risk_reward_ratio_from_analysis(analysis)
+    if ratio is None:
+        return False, "Risk/reward unavailable", None
     if ratio < 1.0:
-        return False, f"Risk/reward below minimum ({ratio:.2f})"
-    return True, "Risk/reward accepted"
+        return False, f"Risk/reward below minimum ({ratio:.2f})", ratio
+    return True, "Risk/reward accepted", ratio
+
+
+def _build_live_setup_assessment(
+    analysis: StockAnalysis,
+    phase: str,
+    min_setup_score: int,
+    price_confirmed: bool,
+    trigger: str,
+    confirmation: str,
+    rr_ratio: float | None,
+) -> dict:
+    md = analysis.market_data
+    signal = analysis.signal
+
+    def comp(value: float | None, maximum: float, status: str) -> dict:
+        return {"value": value, "max": maximum, "status": status}
+
+    trend_value = 0.0
+    if signal == "LONG" and md.trend == "UPTREND":
+        trend_value = 16.0
+    elif signal == "SHORT" and md.trend == "DOWNTREND":
+        trend_value = 16.0
+    elif md.trend == "RANGE":
+        trend_value = 6.0
+
+    momentum_value = 0.0
+    if md.day_change_pct is not None:
+        if signal == "LONG":
+            if md.day_change_pct >= 1.2:
+                momentum_value = 12.0
+            elif md.day_change_pct > 0:
+                momentum_value = 8.0
+        elif signal == "SHORT":
+            if md.day_change_pct <= -1.2:
+                momentum_value = 12.0
+            elif md.day_change_pct < 0:
+                momentum_value = 8.0
+
+    price_action_value = 0.0
+    if price_confirmed:
+        price_action_value = 22.0
+    elif signal == "LONG" and md.breakout_state in {"NEAR BREAKOUT", "BREAKOUT"}:
+        price_action_value = 10.0
+    elif signal == "SHORT" and md.breakout_state in {"NEAR BREAKDOWN", "BREAKDOWN"}:
+        price_action_value = 10.0
+
+    vwap_value: float | None = None
+    vwap_status = "UNAVAILABLE"
+    if md.vwap is not None and md.price is not None:
+        vwap_status = "AVAILABLE"
+        if signal == "LONG" and md.price > md.vwap:
+            vwap_value = 10.0
+        elif signal == "SHORT" and md.price < md.vwap:
+            vwap_value = 10.0
+        else:
+            vwap_value = 0.0
+
+    opening_range_value: float | None = None
+    opening_range_status = "UNAVAILABLE"
+    if md.opening_range_high is not None and md.opening_range_low is not None and md.price is not None:
+        opening_range_status = "AVAILABLE"
+        if signal == "LONG" and md.price > md.opening_range_high:
+            opening_range_value = 10.0
+        elif signal == "SHORT" and md.price < md.opening_range_low:
+            opening_range_value = 10.0
+        elif signal == "LONG" and md.price >= md.opening_range_high * 0.998:
+            opening_range_value = 5.0
+        elif signal == "SHORT" and md.price <= md.opening_range_low * 1.002:
+            opening_range_value = 5.0
+        else:
+            opening_range_value = 0.0
+
+    alignment_value = 10.0 if analysis.market_alignment == "MARKET_ALIGNED" else (6.0 if analysis.market_alignment == "UNKNOWN" else 0.0)
+
+    risk_reward_value: float | None = None
+    risk_reward_status = "UNAVAILABLE"
+    if rr_ratio is not None:
+        risk_reward_status = "AVAILABLE"
+        if rr_ratio >= 1.8:
+            risk_reward_value = 20.0
+        elif rr_ratio >= 1.3:
+            risk_reward_value = 14.0
+        elif rr_ratio >= 1.0:
+            risk_reward_value = 10.0
+        else:
+            risk_reward_value = 0.0
+
+    components = {
+        "trend": comp(trend_value, 16.0, md.trend),
+        "momentum": comp(momentum_value, 12.0, "AVAILABLE" if md.day_change_pct is not None else "UNAVAILABLE"),
+        "price_action": comp(price_action_value, 22.0, trigger if price_confirmed else "SETUP_DEVELOPING"),
+        "vwap": comp(vwap_value, 10.0, vwap_status),
+        "opening_range": comp(opening_range_value, 10.0, opening_range_status),
+        "market_alignment": comp(alignment_value, 10.0, analysis.market_alignment),
+        "risk_reward": comp(risk_reward_value, 20.0, risk_reward_status),
+    }
+
+    available_values = [x["value"] for x in components.values() if x["value"] is not None]
+    available_max = [x["max"] for x in components.values() if x["value"] is not None]
+    if available_values and available_max:
+        raw_score = (sum(available_values) / max(1.0, sum(available_max))) * 100.0
+    else:
+        raw_score = 0.0
+
+    missing_intraday = int(components["vwap"]["value"] is None) + int(components["opening_range"]["value"] is None)
+    final_score = max(0, min(100, int(round(raw_score - (missing_intraday * 4)))))
+
+    if final_score >= min_setup_score and price_confirmed:
+        setup_state = "ENTRY_TRIGGERED"
+    elif final_score >= max(45, min_setup_score - 15):
+        setup_state = "SETUP_DEVELOPING"
+    else:
+        setup_state = "NO_TRADE"
+
+    return {
+        "phase": phase,
+        "components": components,
+        "final_setup_score": final_score,
+        "setup_state": setup_state,
+        "trigger": trigger,
+        "confirmation": confirmation,
+        "missing_intraday_factors": missing_intraday,
+    }
+
+
+def _fmt_component(component: dict) -> str:
+    value = component.get("value")
+    if value is None:
+        return "UNAVAILABLE"
+    return str(int(round(value)))
+
+
+def _log_setup_components(symbol: str, assessment: dict) -> None:
+    c = assessment["components"]
+    print(
+        f"{symbol}: setup components | Trend {_fmt_component(c['trend'])} | Momentum {_fmt_component(c['momentum'])} | "
+        f"PriceAction {_fmt_component(c['price_action'])} | VWAP {_fmt_component(c['vwap'])} | "
+        f"OpeningRange {_fmt_component(c['opening_range'])} | MarketAlign {_fmt_component(c['market_alignment'])} | "
+        f"RiskReward {_fmt_component(c['risk_reward'])} | Final {assessment['final_setup_score']}"
+    )
+
+
+def _setup_status_summary(analysis: StockAnalysis, assessment: dict) -> str:
+    return (
+        f"{analysis.symbol}: {analysis.direction_bias} | SetupState {assessment['setup_state']} | "
+        f"SetupScore {assessment['final_setup_score']}"
+    )
 
 
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
@@ -240,11 +391,36 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         return False, "Price unavailable", thresholds
 
     if analysis.signal == "LONG" and analysis.direction_bias != "LONG_BIAS":
+        thresholds["setup_state"] = "NO_TRADE"
         return False, "LONG signal requires LONG_BIAS", thresholds
     if analysis.signal == "SHORT" and analysis.direction_bias != "SHORT_BIAS":
+        thresholds["setup_state"] = "NO_TRADE"
         return False, "SHORT signal requires SHORT_BIAS", thresholds
 
-    if analysis.setup_score < thresholds["min_setup"]:
+    strict_confirmation = rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}
+    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase, strict=strict_confirmation)
+
+    rr_ok, rr_reason, rr_ratio = _is_risk_reward_acceptable(analysis)
+    setup_assessment = _build_live_setup_assessment(
+        analysis,
+        phase,
+        thresholds["min_setup"],
+        price_confirmed=price_confirmed,
+        trigger=trigger,
+        confirmation=confirmation,
+        rr_ratio=rr_ratio,
+    )
+    thresholds.update(
+        {
+            "setup_components": setup_assessment["components"],
+            "setup_score": setup_assessment["final_setup_score"],
+            "setup_state": setup_assessment["setup_state"],
+            "trigger": setup_assessment["trigger"],
+            "confirmation": setup_assessment["confirmation"],
+        }
+    )
+
+    if setup_assessment["final_setup_score"] < thresholds["min_setup"]:
         return False, f"Setup score below {phase} threshold", thresholds
 
     if rvol_quality == "RELIABLE":
@@ -264,21 +440,18 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     if analysis.signal == "SHORT" and not bearish_structure:
         return False, "No valid bearish structure", thresholds
 
-    rr_ok, rr_reason = _is_risk_reward_acceptable(analysis)
     if not rr_ok:
         return False, rr_reason, thresholds
 
-    strict_confirmation = rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}
-    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase, strict=strict_confirmation)
     if not price_confirmed:
         return False, confirmation, thresholds
 
-    thresholds["trigger"] = trigger
-    thresholds["confirmation"] = confirmation
     thresholds["confirmation_mode"] = "STRICT" if strict_confirmation else "STANDARD"
 
     if opening_range_window and analysis.market_data.breakout_state not in {"BREAKOUT", "BREAKDOWN"}:
         return False, "OPENING RANGE DEVELOPING", thresholds
+
+    thresholds["setup_state"] = "ENTRY_TRIGGERED"
 
     return True, "CONFIRMED", thresholds
 
@@ -341,11 +514,17 @@ def _determine_event(
     v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
     if event_type is None:
         is_confirmable, live_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
+        if "setup_components" in v4:
+            _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
+            print(_setup_status_summary(analysis, {"setup_state": v4.get("setup_state", "NO_TRADE"), "final_setup_score": v4.get("setup_score", 0)}))
         if not is_confirmable:
             print(
                 f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
                 f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | {live_reason}. No alert generated."
             )
+            return None
+
+        if v4.get("setup_state") != "ENTRY_TRIGGERED":
             return None
 
         if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
@@ -381,7 +560,8 @@ def _determine_event(
         "title": f"{emoji} {title}",
         "reason": analysis.main_reason,
         "price": price,
-        "setup_score": analysis.setup_score,
+        "setup_score": v4.get("setup_score", analysis.setup_score),
+        "setup_state": v4.get("setup_state", "ENTRY_TRIGGERED"),
         "direction_bias": analysis.direction_bias,
         "market_regime": analysis.market_alignment,
         "entry_trigger": analysis.battle_plan.entry_trigger_price,
@@ -398,6 +578,11 @@ def _determine_event(
         "phase": v4["phase"],
         "v4_trigger": v4.get("trigger"),
         "v4_confirmation": v4.get("confirmation"),
+        "vwap_status": "AVAILABLE" if analysis.market_data.vwap is not None else "UNAVAILABLE",
+        "opening_range_status": (
+            "AVAILABLE" if analysis.market_data.opening_range_high is not None and analysis.market_data.opening_range_low is not None else "UNAVAILABLE"
+        ),
+        "risk_reward_ratio": _risk_reward_ratio_from_analysis(analysis),
     }
 
 
@@ -524,13 +709,19 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
         rvol_line = "RVOL: Unavailable"
 
     header = "🚨 V4 LONG ALERT" if signal == "LONG" else "🚨 V4 SHORT ALERT"
+    rr_ratio = alert.get("risk_reward_ratio")
+    rr_line = f"Risk/Reward: {rr_ratio:.2f}" if isinstance(rr_ratio, (int, float)) else "Risk/Reward: UNAVAILABLE"
     return (
         f"<b>{header}</b>\n\n"
+        f"Signal: <b>{'LONG' if signal == 'LONG' else 'SHORT'}</b>\n"
         f"Symbol: <b>{symbol}</b>\n"
         f"Phase: {phase}\n"
-        f"Bias: {'LONG' if signal == 'LONG' else 'SHORT'}\n\n"
+        f"Bias: {'LONG' if signal == 'LONG' else 'SHORT'}\n"
+        f"Setup State: {alert.get('setup_state', 'ENTRY_TRIGGERED')}\n\n"
         f"Setup Score: {alert['setup_score']}/100\n"
         f"Price: {_fmt_price(alert.get('price'))}\n\n"
+        "Entry Price\n"
+        f"{_fmt_price(alert.get('entry_trigger'))}\n\n"
         "Trigger\n"
         f"{alert.get('v4_trigger') or ('Break above ' + _fmt_price(alert.get('entry_trigger')) if signal == 'LONG' else 'Break below ' + _fmt_price(alert.get('entry_trigger')))}\n\n"
         "Confirmation\n"
@@ -541,6 +732,9 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
         f"{_fmt_price(alert.get('target_1'))}\n\n"
         "Target 2\n"
         f"{_fmt_price(alert.get('target_2'))}\n\n"
+        f"{rr_line}\n"
+        f"VWAP: {alert.get('vwap_status', 'UNAVAILABLE')}\n"
+        f"Opening Range: {alert.get('opening_range_status', 'UNAVAILABLE')}\n"
         f"Market: {alert.get('market_regime', 'Unavailable')}\n"
         f"{rvol_line}"
     ) + f"\n\nTime: {time_label}"
