@@ -32,6 +32,12 @@ jobs:
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           DAILY_REPORT_CRON_UTC: ${{ vars.DAILY_REPORT_CRON_UTC }}
+          MIN_SETUP_SCORE: ${{ vars.MIN_SETUP_SCORE }}
+          MIN_RELATIVE_VOLUME: ${{ vars.MIN_RELATIVE_VOLUME }}
+          DAY_TRADE_THRESHOLD: ${{ vars.DAY_TRADE_THRESHOLD }}
+          LONG_THRESHOLD: ${{ vars.LONG_THRESHOLD }}
+          SHORT_THRESHOLD: ${{ vars.SHORT_THRESHOLD }}
+          DYNAMIC_COUNT: ${{ vars.DYNAMIC_COUNT }}
         run: python -m src.daily_stock_analyse
 
       - name: Upload report artifacts
