@@ -273,7 +273,7 @@ def test_invalidation_alert_formatting():
 
 def test_duplicate_state_does_not_send_transition_event():
     cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "LONG"}}}
+    state = {"symbols": {"PLTR": {"last_signal": "LONG", "position_state": "IN_POSITION", "active_direction": "LONG"}}}
     analysis = _analysis("PLTR", "LONG", "LONG_BIAS")
     event = _determine_event(analysis, state, cfg, datetime(2026, 8, 10, 14, 45, tzinfo=UTC), opening_range_window=False)
     assert event is None

@@ -43,6 +43,18 @@ class AlertEligibilityResult:
     detail: str | None = None
 
 
+@dataclass
+class TradeLevels:
+    direction: str
+    entry: float | None
+    stop: float | None
+    target1: float | None
+    target2: float | None
+    risk_reward: float | None
+    source: str
+    detail: str | None = None
+
+
 def run_live_alerts(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     cfg = load_config(repo_root)
@@ -566,6 +578,215 @@ def _risk_reward_ratio_from_levels(signal: str, entry: float | None, stop: float
     return reward / risk
 
 
+def _is_valid_geometry(direction: str, entry: float | None, stop: float | None, target1: float | None) -> bool:
+    if entry is None or stop is None or target1 is None:
+        return False
+    if direction == "LONG":
+        return stop < entry < target1
+    if direction == "SHORT":
+        return target1 < entry < stop
+    return False
+
+
+def _rounded(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 4)
+
+
+def _recent_swing_low(ctx: dict) -> float | None:
+    lows = list(ctx.get("lows") or [])
+    if len(lows) < 3:
+        return None
+    window = lows[-8:-1] if len(lows) >= 8 else lows[:-1]
+    if not window:
+        return None
+    return min(window)
+
+
+def _recent_swing_high(ctx: dict) -> float | None:
+    highs = list(ctx.get("highs") or [])
+    if len(highs) < 3:
+        return None
+    window = highs[-8:-1] if len(highs) >= 8 else highs[:-1]
+    if not window:
+        return None
+    return max(window)
+
+
+def _trade_levels_from_intraday_structure(analysis: StockAnalysis, cfg: AppConfig) -> TradeLevels:
+    md = analysis.market_data
+    direction = _intended_direction(analysis)
+    ctx = _compute_intraday_context(analysis, cfg)
+
+    if direction not in {"LONG", "SHORT"}:
+        return TradeLevels(direction=direction, entry=None, stop=None, target1=None, target2=None, risk_reward=None, source="none", detail="No trade direction")
+
+    close = ctx.get("close")
+    entry_trigger = analysis.battle_plan.entry_trigger_price
+    entry = close if isinstance(close, (int, float)) else entry_trigger
+
+    if not isinstance(entry, (int, float)):
+        return TradeLevels(
+            direction=direction,
+            entry=None,
+            stop=None,
+            target1=None,
+            target2=None,
+            risk_reward=None,
+            source="none",
+            detail="Entry unavailable from trigger/current price",
+        )
+
+    or_high = ctx.get("or_high")
+    or_low = ctx.get("or_low")
+    vwap = ctx.get("session_vwap")
+    swing_low = _recent_swing_low(ctx)
+    swing_high = _recent_swing_high(ctx)
+    structure_width = None
+    if isinstance(or_high, (int, float)) and isinstance(or_low, (int, float)):
+        width = float(or_high) - float(or_low)
+        if width > 0:
+            structure_width = width
+
+    stop = None
+    stop_source = ""
+    if direction == "LONG":
+        if isinstance(or_low, (int, float)) and or_low < entry:
+            stop = float(or_low)
+            stop_source = "opening_range"
+        elif isinstance(swing_low, (int, float)) and swing_low < entry:
+            stop = float(swing_low)
+            stop_source = "swing_structure"
+        elif isinstance(vwap, (int, float)) and vwap < entry:
+            stop = float(vwap)
+            stop_source = "vwap_structure"
+        elif isinstance(md.support, (int, float)) and md.support < entry:
+            stop = float(md.support)
+            stop_source = "swing_structure"
+    else:
+        if isinstance(or_high, (int, float)) and or_high > entry:
+            stop = float(or_high)
+            stop_source = "opening_range"
+        elif isinstance(swing_high, (int, float)) and swing_high > entry:
+            stop = float(swing_high)
+            stop_source = "swing_structure"
+        elif isinstance(vwap, (int, float)) and vwap > entry:
+            stop = float(vwap)
+            stop_source = "vwap_structure"
+        elif isinstance(md.resistance, (int, float)) and md.resistance > entry:
+            stop = float(md.resistance)
+            stop_source = "swing_structure"
+
+    target1 = None
+    target1_source = ""
+    target2 = None
+    target2_source = ""
+    if direction == "LONG":
+        target_candidates: list[tuple[float, str]] = []
+        if isinstance(analysis.battle_plan.target_1, (int, float)) and analysis.battle_plan.target_1 > entry:
+            target_candidates.append((float(analysis.battle_plan.target_1), "swing_structure"))
+        if isinstance(md.resistance, (int, float)) and md.resistance > entry:
+            target_candidates.append((float(md.resistance), "swing_structure"))
+        if isinstance(swing_high, (int, float)) and swing_high > entry:
+            target_candidates.append((float(swing_high), "swing_structure"))
+        if structure_width is not None and structure_width > 0:
+            target_candidates.append((float(entry + structure_width), "opening_range"))
+            target_candidates.append((float(entry + (2.0 * structure_width)), "opening_range"))
+
+        target_candidates = sorted(target_candidates, key=lambda x: x[0])
+        if isinstance(stop, (int, float)) and stop < entry:
+            for value, source in target_candidates:
+                if value > entry:
+                    rr = _risk_reward_ratio_from_levels("LONG", entry, stop, value)
+                    if isinstance(rr, (int, float)) and rr >= MIN_RISK_REWARD:
+                        target1 = value
+                        target1_source = source
+                        break
+        if target1 is None:
+            for value, source in target_candidates:
+                if value > entry:
+                    target1 = value
+                    target1_source = source
+                    break
+        if target1 is not None:
+            for value, source in target_candidates:
+                if value > target1:
+                    target2 = value
+                    target2_source = source
+                    break
+            if target2 is None and isinstance(analysis.battle_plan.target_2, (int, float)) and analysis.battle_plan.target_2 > target1:
+                target2 = float(analysis.battle_plan.target_2)
+                target2_source = "swing_structure"
+    else:
+        target_candidates_short: list[tuple[float, str]] = []
+        if isinstance(analysis.battle_plan.target_1, (int, float)) and analysis.battle_plan.target_1 < entry:
+            target_candidates_short.append((float(analysis.battle_plan.target_1), "swing_structure"))
+        if isinstance(md.support, (int, float)) and md.support < entry:
+            target_candidates_short.append((float(md.support), "swing_structure"))
+        if isinstance(swing_low, (int, float)) and swing_low < entry:
+            target_candidates_short.append((float(swing_low), "swing_structure"))
+        if structure_width is not None and structure_width > 0:
+            target_candidates_short.append((float(entry - structure_width), "opening_range"))
+            target_candidates_short.append((float(entry - (2.0 * structure_width)), "opening_range"))
+
+        target_candidates_short = sorted(target_candidates_short, key=lambda x: x[0], reverse=True)
+        if isinstance(stop, (int, float)) and stop > entry:
+            for value, source in target_candidates_short:
+                if value < entry:
+                    rr = _risk_reward_ratio_from_levels("SHORT", entry, stop, value)
+                    if isinstance(rr, (int, float)) and rr >= MIN_RISK_REWARD:
+                        target1 = value
+                        target1_source = source
+                        break
+        if target1 is None:
+            for value, source in target_candidates_short:
+                if value < entry:
+                    target1 = value
+                    target1_source = source
+                    break
+        if target1 is not None:
+            for value, source in sorted(target_candidates_short, key=lambda x: x[0]):
+                if value < target1:
+                    target2 = value
+                    target2_source = source
+                    break
+            if target2 is None and isinstance(analysis.battle_plan.target_2, (int, float)) and analysis.battle_plan.target_2 < target1:
+                target2 = float(analysis.battle_plan.target_2)
+                target2_source = "swing_structure"
+
+    if target2 is not None:
+        if direction == "LONG" and target2 <= target1:
+            target2 = None
+            target2_source = ""
+        if direction == "SHORT" and target2 >= target1:
+            target2 = None
+            target2_source = ""
+
+    rr_ratio = _risk_reward_ratio_from_levels(direction, entry, stop, target1)
+    source_parts = [x for x in [stop_source, target1_source or target2_source] if x]
+    source = "+".join(dict.fromkeys(source_parts)) if source_parts else "none"
+
+    detail = None
+    if stop is None:
+        detail = "Unable to derive stop from opening range/swing/VWAP"
+    elif target1 is None:
+        detail = "Unable to derive target1 from structure"
+    elif not _is_valid_geometry(direction, entry, stop, target1):
+        detail = "Invalid trade geometry"
+
+    return TradeLevels(
+        direction=direction,
+        entry=_rounded(entry),
+        stop=_rounded(stop),
+        target1=_rounded(target1),
+        target2=_rounded(target2),
+        risk_reward=_rounded(rr_ratio),
+        source=source,
+        detail=detail,
+    )
+
+
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
@@ -638,24 +859,118 @@ def _evaluate_alert_eligibility(
     cfg: AppConfig,
     now: datetime,
     opening_range_window: bool,
-) -> tuple[AlertEligibilityResult, dict, str | None]:
+) -> tuple[AlertEligibilityResult, dict, str | None, TradeLevels | None]:
     signal = analysis.signal
     direction = signal if signal in {"LONG", "SHORT"} else _intended_direction(analysis)
-    entry = analysis.battle_plan.entry_trigger_price
-    stop = analysis.battle_plan.invalidation_price
-    target_1 = analysis.battle_plan.target_1
-    target_2 = analysis.battle_plan.target_2
 
     technical_ok, technical_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
     setup_score = int(v4.get("setup_score", analysis.setup_score))
     rvol_value = v4.get("rvol")
     rvol_quality = v4.get("rvol_quality", "UNAVAILABLE")
 
-    rr_ratio = _risk_reward_ratio_from_levels(signal, entry, stop, target_1)
-    if not isinstance(rr_ratio, (int, float)):
-        rr_ratio = None
-
     if not technical_ok or v4.get("setup_state") != "ENTRY_TRIGGERED":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_ENTRY_NOT_CONFIRMED,
+                direction=direction,
+                entry=None,
+                stop=None,
+                target1=None,
+                target2=None,
+                risk_reward=None,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=technical_reason,
+            ),
+            v4,
+            None,
+            None,
+        )
+
+    candidate_event_type = "WAIT_TO_LONG" if direction == "LONG" else "WAIT_TO_SHORT"
+
+    trade_levels = _trade_levels_from_intraday_structure(analysis, cfg)
+    entry = trade_levels.entry
+    stop = trade_levels.stop
+    target_1 = trade_levels.target1
+    target_2 = trade_levels.target2
+    rr_ratio = trade_levels.risk_reward
+
+    if not _is_valid_geometry(direction, entry, stop, target_1):
+        detail = trade_levels.detail or "Invalid risk levels"
+        if entry is None:
+            detail = "Missing entry"
+        elif stop is None:
+            detail = "Missing stop"
+        elif target_1 is None:
+            detail = "Missing target1"
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_INVALID_RISK_LEVELS,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=detail,
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+        )
+
+    if opening_range_window and v4.get("trigger") == "Opening-range breakout":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_PHASE_BLOCKED,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="Opening range still developing",
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+        )
+
+    min_rvol = cfg.v4_opening_min_rvol if v4.get("phase") == "OPENING" else cfg.v4_normal_min_rvol
+    if rvol_quality == "RELIABLE" and (not isinstance(rvol_value, (int, float)) or rvol_value < min_rvol):
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_RVOL_TOO_LOW,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=f"RVOL {rvol_value:.2f} < {min_rvol:.2f}" if isinstance(rvol_value, (int, float)) else "RVOL unavailable",
+            ),
+            v4,
+            candidate_event_type,
+            trade_levels,
+        )
+
+    min_setup = cfg.v4_opening_min_setup_score if v4.get("phase") == "OPENING" else cfg.v4_normal_min_setup_score
+    if setup_score < min_setup:
         return (
             AlertEligibilityResult(
                 eligible=False,
@@ -669,51 +984,11 @@ def _evaluate_alert_eligibility(
                 setup_score=setup_score,
                 rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
                 rvol_quality=rvol_quality,
-                detail=technical_reason,
-            ),
-            v4,
-            None,
-        )
-
-    candidate_event_type = _entry_transition_event_type(symbol_state.get("last_signal", "WAIT"), signal)
-    if candidate_event_type is None:
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_NO_ALERT,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail="No entry transition from current state",
-            ),
-            v4,
-            None,
-        )
-
-    if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == signal:
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_DUPLICATE_POSITION,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail=f"Already IN_POSITION {signal}",
+                detail=f"Setup score below {v4.get('phase')} threshold ({setup_score} < {min_setup})",
             ),
             v4,
             candidate_event_type,
+            trade_levels,
         )
 
     last_alert_type = symbol_state.get("last_alert_type")
@@ -737,13 +1012,14 @@ def _evaluate_alert_eligibility(
                 ),
                 v4,
                 candidate_event_type,
+                trade_levels,
             )
 
-    if opening_range_window and v4.get("trigger") == "Opening-range breakout":
+    if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == signal:
         return (
             AlertEligibilityResult(
                 eligible=False,
-                reason=ALERT_REASON_PHASE_BLOCKED,
+                reason=ALERT_REASON_DUPLICATE_POSITION,
                 direction=direction,
                 entry=entry,
                 stop=stop,
@@ -753,25 +1029,14 @@ def _evaluate_alert_eligibility(
                 setup_score=setup_score,
                 rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
                 rvol_quality=rvol_quality,
-                detail="Opening range still developing",
+                detail=f"Already IN_POSITION {signal}",
             ),
             v4,
             candidate_event_type,
+            trade_levels,
         )
 
-    missing_levels: list[str] = []
-    if entry is None:
-        missing_levels.append("entry")
-    if stop is None:
-        missing_levels.append("stop")
-    if target_1 is None:
-        missing_levels.append("target_1")
-    if missing_levels or rr_ratio is None:
-        detail = "Missing or invalid risk levels"
-        if missing_levels:
-            detail = f"Missing {', '.join(missing_levels)}"
-        elif rr_ratio is None:
-            detail = "Invalid long/short risk-reward geometry"
+    if not isinstance(rr_ratio, (int, float)):
         return (
             AlertEligibilityResult(
                 eligible=False,
@@ -785,31 +1050,11 @@ def _evaluate_alert_eligibility(
                 setup_score=setup_score,
                 rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
                 rvol_quality=rvol_quality,
-                detail=detail,
+                detail="Unable to compute RR from generated levels",
             ),
             v4,
             candidate_event_type,
-        )
-
-    min_rvol = cfg.v4_opening_min_rvol if v4.get("phase") == "OPENING" else cfg.v4_normal_min_rvol
-    if rvol_quality == "RELIABLE" and (not isinstance(rvol_value, (int, float)) or rvol_value < min_rvol):
-        return (
-            AlertEligibilityResult(
-                eligible=False,
-                reason=ALERT_REASON_RVOL_TOO_LOW,
-                direction=direction,
-                entry=entry,
-                stop=stop,
-                target1=target_1,
-                target2=target_2,
-                risk_reward=rr_ratio,
-                setup_score=setup_score,
-                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
-                rvol_quality=rvol_quality,
-                detail=f"RVOL {rvol_value:.2f} < {min_rvol:.2f}" if isinstance(rvol_value, (int, float)) else "RVOL unavailable",
-            ),
-            v4,
-            candidate_event_type,
+            trade_levels,
         )
 
     if rr_ratio < MIN_RISK_REWARD:
@@ -830,6 +1075,7 @@ def _evaluate_alert_eligibility(
             ),
             v4,
             candidate_event_type,
+            trade_levels,
         )
 
     return (
@@ -849,6 +1095,7 @@ def _evaluate_alert_eligibility(
         ),
         v4,
         candidate_event_type,
+        trade_levels,
     )
 
 
@@ -910,8 +1157,9 @@ def _determine_event(
 
     v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
     eligibility: AlertEligibilityResult | None = None
+    trade_levels: TradeLevels | None = None
     if event_type is None:
-        eligibility, v4, candidate_event_type = _evaluate_alert_eligibility(analysis, symbol_state, cfg, now, opening_range_window)
+        eligibility, v4, candidate_event_type, trade_levels = _evaluate_alert_eligibility(analysis, symbol_state, cfg, now, opening_range_window)
         symbol_state["last_setup_state"] = v4.get("setup_state", "NO_TRADE")
         if "setup_components" in v4:
             _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
@@ -928,8 +1176,18 @@ def _determine_event(
 
         if v4.get("setup_state") == "ENTRY_TRIGGERED":
             rvol_log = f"{eligibility.rvol:.2f}" if isinstance(eligibility.rvol, (int, float)) else eligibility.rvol_quality
-            rr_log = f"{eligibility.risk_reward:.2f}" if isinstance(eligibility.risk_reward, (int, float)) else "UNAVAILABLE"
-            print(f"{analysis.symbol}: ENTRY_TRIGGERED | SetupScore {eligibility.setup_score} | RVOL {rvol_log} | RR {rr_log}")
+            print(f"{analysis.symbol}: ENTRY_TRIGGERED | SetupScore {eligibility.setup_score} | RVOL {rvol_log}")
+
+            entry_text = f"{trade_levels.entry:.2f}" if trade_levels and isinstance(trade_levels.entry, (int, float)) else "UNAVAILABLE"
+            stop_text = f"{trade_levels.stop:.2f}" if trade_levels and isinstance(trade_levels.stop, (int, float)) else "UNAVAILABLE"
+            t1_text = f"{trade_levels.target1:.2f}" if trade_levels and isinstance(trade_levels.target1, (int, float)) else "UNAVAILABLE"
+            t2_text = f"{trade_levels.target2:.2f}" if trade_levels and isinstance(trade_levels.target2, (int, float)) else "UNAVAILABLE"
+            rr_text = f"{trade_levels.risk_reward:.2f}" if trade_levels and isinstance(trade_levels.risk_reward, (int, float)) else "UNAVAILABLE"
+            src_text = trade_levels.source if trade_levels is not None else "none"
+            print(
+                f"{analysis.symbol}: TRADE_LEVELS | Direction {eligibility.direction} | Entry {entry_text} | "
+                f"Stop {stop_text} | Target1 {t1_text} | Target2 {t2_text} | RR {rr_text} | Source {src_text}"
+            )
 
         if not eligibility.eligible:
             symbol_state["last_alert_decision"] = "ALERT_BLOCKED" if v4.get("setup_state") == "ENTRY_TRIGGERED" else "NO_ALERT"
@@ -952,10 +1210,11 @@ def _determine_event(
         symbol_state["last_alert_decision"] = "ALERT_ELIGIBLE"
         symbol_state["last_alert_reason"] = "ALERT_ELIGIBLE"
         rr_log = f"{eligibility.risk_reward:.2f}" if isinstance(eligibility.risk_reward, (int, float)) else "UNAVAILABLE"
+        target2_log = f"{eligibility.target2:.2f}" if isinstance(eligibility.target2, (int, float)) else "UNAVAILABLE"
         print(
             f"{analysis.symbol}: ALERT_ELIGIBLE | {eligibility.direction} | "
             f"Entry {eligibility.entry:.2f} | Stop {eligibility.stop:.2f} | "
-            f"Target1 {eligibility.target1:.2f} | RR {rr_log}"
+            f"Target1 {eligibility.target1:.2f} | Target2 {target2_log} | RR {rr_log}"
         )
 
         if event_type is None:
@@ -993,11 +1252,11 @@ def _determine_event(
         "setup_state": v4.get("setup_state", "ENTRY_TRIGGERED"),
         "direction_bias": analysis.direction_bias,
         "market_regime": analysis.market_alignment,
-        "entry_trigger": analysis.battle_plan.entry_trigger_price,
+        "entry_trigger": eligibility.entry if eligibility is not None else analysis.battle_plan.entry_trigger_price,
         "confirmation_level": analysis.battle_plan.confirmation_level,
-        "invalidation": analysis.battle_plan.invalidation_price,
-        "target_1": target_1,
-        "target_2": target_2,
+        "invalidation": eligibility.stop if eligibility is not None else analysis.battle_plan.invalidation_price,
+        "target_1": eligibility.target1 if eligibility is not None else target_1,
+        "target_2": eligibility.target2 if eligibility is not None else target_2,
         "risk_reward": analysis.battle_plan.risk_reward_assessment,
         "timestamp": now.isoformat(),
         "timestamp_market": analysis.market_data.intraday_timestamp or analysis.market_data.data_timestamp,
@@ -1013,6 +1272,7 @@ def _determine_event(
             or ("AVAILABLE" if analysis.market_data.opening_range_high is not None and analysis.market_data.opening_range_low is not None else "UNAVAILABLE")
         ),
         "risk_reward_ratio": eligibility.risk_reward if eligibility is not None else _risk_reward_ratio_from_analysis(analysis),
+        "trade_level_source": trade_levels.source if trade_levels is not None else "none",
     }
 
 
