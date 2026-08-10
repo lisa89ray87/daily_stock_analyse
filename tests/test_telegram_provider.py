@@ -85,6 +85,7 @@ def _sample_alert(event_type: str = "WAIT_TO_LONG", signal: str = "LONG") -> dic
         "timestamp_market": datetime(2026, 8, 10, 14, 35, tzinfo=UTC).isoformat(),
         "level_unavailable_reason": None,
         "rvol": 1.85,
+        "rvol_quality": "RELIABLE",
     }
 
 
@@ -204,7 +205,15 @@ def test_long_alert_formatting():
     msg = _render_telegram_message(_sample_alert(event_type="WAIT_TO_LONG", signal="LONG"), "America/New_York")
     assert "LONG ALERT" in msg
     assert "Break above" in msg
-    assert "RVOL: 1.85" in msg
+    assert "RVOL: 1.85 (RELIABLE)" in msg
+
+
+def test_long_alert_formatting_with_data_limited_rvol_quality():
+    alert = _sample_alert(event_type="WAIT_TO_LONG", signal="LONG")
+    alert["rvol"] = None
+    alert["rvol_quality"] = "DATA_LIMITED"
+    msg = _render_telegram_message(alert, "America/New_York")
+    assert "RVOL: DATA_LIMITED" in msg
 
 
 def test_short_alert_formatting():

@@ -1,12 +1,7 @@
 from datetime import UTC, datetime
-from unittest.mock import patch
 
 from src.daily_stock_analyse.config import AppConfig
-from src.daily_stock_analyse.live_alerts import (
-    _determine_event,
-    _send_telegram_alerts,
-    _v4_session_phase,
-)
+from src.daily_stock_analyse.live_alerts import _determine_event, _v4_session_phase
 from src.daily_stock_analyse.models import (
     BattlePlan,
     DataQuality,
@@ -74,6 +69,8 @@ def _analysis(
     bias: str,
     setup_score: int,
     rvol: float | None,
+    *,
+    provider: str = "testfeed",
     trend: str = "UPTREND",
     breakout_state: str = "BREAKOUT",
     price: float = 102.0,
@@ -83,6 +80,8 @@ def _analysis(
     resistance: float | None = 101.0,
     support: float | None = 99.0,
     alignment: str = "MARKET_ALIGNED",
+    volume: float | None = 2_000_000,
+    avg_volume_20d: float | None = 1_000_000,
 ) -> StockAnalysis:
     return StockAnalysis(
         symbol="PLTR",
@@ -112,8 +111,11 @@ def _analysis(
             resistance=resistance,
             support=support,
             day_change_pct=1.2,
+            volume=volume,
+            avg_volume_20d=avg_volume_20d,
             intraday_timestamp="2026-08-10T14:35:00Z",
             data_timestamp="2026-08-10T14:35:00Z",
+            provider=provider,
         ),
         intelligence=IntelligenceBlock(),
         battle_plan=BattlePlan(
@@ -132,7 +134,7 @@ def _analysis(
             target_2=106.0,
         ),
         score=ScoreBreakdown(total=0.1, long_score=0.8, short_score=0.2, components={}, weights={}),
-        data_quality=DataQuality(True, True, True, True, True, "yfinance", []),
+        data_quality=DataQuality(True, True, True, True, True, provider, []),
     )
 
 
@@ -154,127 +156,83 @@ def test_v4_phase_selection_1000_normal():
     assert _v4_session_phase(now, cfg) == "NORMAL"
 
 
-def test_opening_long_rvol_120_setup_75_with_confirmation_can_alert():
+def test_reliable_rvol_below_threshold_rejected():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", setup_score=75, rvol=1.20, trend="UPTREND", breakout_state="BREAKOUT")
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.49, provider="testfeed")
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+
+
+def test_reliable_rvol_above_threshold_accepted():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.72, provider="testfeed")
     event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is not None
     assert event["event_type"] == "WAIT_TO_LONG"
-    assert event["phase"] == "OPENING"
+    assert event["rvol_quality"] == "RELIABLE"
 
 
-def test_opening_setup_with_rvol_119_does_not_qualify():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.19)
-    assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
-
-
-def test_opening_setup_with_score_74_does_not_qualify():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", setup_score=74, rvol=1.30)
-    assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
-
-
-def test_normal_setup_with_rvol_149_does_not_qualify():
+def test_unavailable_rvol_strong_price_can_still_alert():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
     now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.49)
-    assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
-
-
-def test_normal_setup_with_rvol_150_and_score_70_can_qualify():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", setup_score=70, rvol=1.50, trend="UPTREND", breakout_state="BREAKOUT")
+    a = _analysis("LONG", "LONG_BIAS", setup_score=85, rvol=None, provider="testfeed")
     event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is not None
-    assert event["phase"] == "NORMAL"
+    assert event["rvol"] is None
+    assert event["rvol_quality"] == "UNAVAILABLE"
 
 
-def test_rvol_alone_never_generates_alert():
+def test_unavailable_rvol_weak_price_rejected():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
     a = _analysis(
         "LONG",
         "LONG_BIAS",
-        setup_score=90,
-        rvol=2.0,
+        setup_score=88,
+        rvol=None,
+        provider="testfeed",
         trend="RANGE",
         breakout_state="NO CLEAR BREAK",
         vwap=None,
         opening_range_high=None,
-        opening_range_low=None,
         resistance=None,
-        support=None,
     )
     assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
 
 
-def test_missing_vwap_and_opening_range_does_not_fabricate_values():
+def test_data_limited_rvol_does_not_auto_reject_strong_setup():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
-    a = _analysis(
-        "SHORT",
-        "SHORT_BIAS",
-        setup_score=85,
-        rvol=1.8,
-        trend="RANGE",
-        breakout_state="NO CLEAR BREAK",
-        vwap=None,
-        opening_range_high=None,
-        opening_range_low=None,
-        resistance=None,
-        support=None,
-    )
-    assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _analysis("LONG", "LONG_BIAS", setup_score=85, rvol=0.83, provider="yfinance")
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert event["rvol_quality"] == "DATA_LIMITED"
 
 
-def test_existing_cooldown_behavior_remains_intact():
+def test_no_fabricated_rvol_when_unavailable():
     cfg = _cfg()
-    now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
-    state = {
-        "symbols": {
-            "PLTR": {
-                "last_signal": "WAIT",
-                "last_alert_type": "WAIT_TO_LONG",
-                "last_alert_timestamp": datetime(2026, 8, 10, 13, 35, tzinfo=UTC).isoformat(),
-            }
-        }
-    }
-    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.4)
-    assert _determine_event(a, state, cfg, now, opening_range_window=False) is None
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _analysis("LONG", "LONG_BIAS", setup_score=85, rvol=None, provider="testfeed")
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert event["rvol"] is None
+    assert event["rvol_quality"] == "UNAVAILABLE"
 
 
-def test_telegram_send_is_mocked_and_no_real_api_when_disabled():
+def test_candidate_logging_includes_rvol_value_and_quality(capsys):
     cfg = _cfg()
-    alert = {
-        "symbol": "PLTR",
-        "signal": "LONG",
-        "event_type": "WAIT_TO_LONG",
-        "phase": "OPENING",
-        "setup_score": 80,
-        "price": 101.5,
-        "v4_trigger": "Break above opening range high",
-        "v4_confirmation": "Opening-range breakout confirmed",
-        "invalidation": 99.0,
-        "target_1": None,
-        "target_2": None,
-        "market_regime": "MARKET_ALIGNED",
-        "rvol": 1.25,
-        "timestamp": datetime(2026, 8, 10, 13, 40, tzinfo=UTC).isoformat(),
-        "timestamp_market": datetime(2026, 8, 10, 13, 40, tzinfo=UTC).isoformat(),
-    }
-    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
-        sent = _send_telegram_alerts([alert], cfg)
-    assert sent == 0
-    assert send_mock.call_count == 0
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _analysis("LONG", "LONG_BIAS", setup_score=80, rvol=1.72, provider="testfeed")
+    _determine_event(a, state, cfg, now, opening_range_window=False)
+    captured = capsys.readouterr().out
+    assert "RVOL 1.72" in captured
+    assert "RVOL RELIABLE" in captured

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -116,7 +117,34 @@ def _v4_session_phase(now_utc: datetime, cfg: AppConfig) -> str:
     return "NORMAL"
 
 
-def _price_action_confirmation(analysis: StockAnalysis, phase: str) -> tuple[bool, str, str]:
+def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: datetime) -> tuple[str, str]:
+    md = analysis.market_data
+    if md.relative_volume is None:
+        return "UNAVAILABLE", "RVOL missing from provider"
+
+    if md.volume is None or md.avg_volume_20d is None:
+        return "DATA_LIMITED", "Volume baseline is incomplete"
+
+    ts = _parse_ts(md.intraday_timestamp or md.data_timestamp)
+    if ts is None:
+        return "DATA_LIMITED", "Provider timestamp unavailable"
+    if now_utc - ts > timedelta(minutes=20):
+        return "DATA_LIMITED", "Provider timestamp is stale"
+
+    market_now = now_utc.astimezone(ZoneInfo(cfg.live_market_timezone))
+    session_open = _parse_hhmm(cfg.live_market_open)
+    session_close = _parse_hhmm(cfg.live_market_close)
+    market_session_live = session_open <= market_now.time() <= session_close
+
+    # yfinance RVOL here uses current daily volume vs full-day 20d average,
+    # which is not intraday time-normalized during live market hours.
+    if md.provider == "yfinance" and market_session_live:
+        return "DATA_LIMITED", "Daily-vs-20d RVOL baseline is not intraday-normalized"
+
+    return "RELIABLE", "RVOL baseline and timestamp are valid"
+
+
+def _price_action_confirmation(analysis: StockAnalysis, phase: str, strict: bool = False) -> tuple[bool, str, str]:
     md = analysis.market_data
     signal = analysis.signal
 
@@ -128,6 +156,12 @@ def _price_action_confirmation(analysis: StockAnalysis, phase: str) -> tuple[boo
             return True, "Break above opening range high", "Opening-range breakout confirmed"
         if md.resistance is not None and md.price > md.resistance:
             return True, "Break above resistance", "Resistance breakout confirmed"
+        if strict and md.vwap is not None and md.price > md.vwap and md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
+            return True, "Breakout above VWAP", "Strict bullish VWAP+breakout confirmation"
+        if strict and md.trend == "UPTREND" and md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
+            return True, "Uptrend breakout structure", "Strict trend+breakout confirmation"
+        if strict:
+            return False, "Unavailable", "No bullish price-action confirmation (strict)"
         if md.vwap is not None and md.price > md.vwap:
             return True, "Price above VWAP", "Bullish VWAP confirmation"
         if md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
@@ -141,6 +175,12 @@ def _price_action_confirmation(analysis: StockAnalysis, phase: str) -> tuple[boo
             return True, "Break below opening range low", "Opening-range breakdown confirmed"
         if md.support is not None and md.price < md.support:
             return True, "Break below support", "Support breakdown confirmed"
+        if strict and md.vwap is not None and md.price < md.vwap and md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
+            return True, "Breakdown below VWAP", "Strict bearish VWAP+breakdown confirmation"
+        if strict and md.trend == "DOWNTREND" and md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
+            return True, "Downtrend breakdown structure", "Strict trend+breakdown confirmation"
+        if strict:
+            return False, "Unavailable", "No bearish price-action confirmation (strict)"
         if md.vwap is not None and md.price < md.vwap:
             return True, "Price below VWAP", "Bearish VWAP confirmation"
         if md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
@@ -152,14 +192,48 @@ def _price_action_confirmation(analysis: StockAnalysis, phase: str) -> tuple[boo
     return False, "Unavailable", "Signal is not LONG/SHORT"
 
 
+def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str]:
+    bp = analysis.battle_plan
+    signal = analysis.signal
+
+    if signal == "LONG" and bp.entry_trigger_price is not None and bp.invalidation_price is not None and bp.target_1 is not None:
+        risk = bp.entry_trigger_price - bp.invalidation_price
+        reward = bp.target_1 - bp.entry_trigger_price
+        if risk <= 0 or reward <= 0:
+            return False, "Risk/reward levels are invalid"
+        ratio = reward / max(risk, 1e-9)
+        return (ratio >= 1.0, f"Risk/reward below minimum ({ratio:.2f})" if ratio < 1.0 else "Risk/reward accepted")
+
+    if signal == "SHORT" and bp.entry_trigger_price is not None and bp.invalidation_price is not None and bp.target_1 is not None:
+        risk = bp.invalidation_price - bp.entry_trigger_price
+        reward = bp.entry_trigger_price - bp.target_1
+        if risk <= 0 or reward <= 0:
+            return False, "Risk/reward levels are invalid"
+        ratio = reward / max(risk, 1e-9)
+        return (ratio >= 1.0, f"Risk/reward below minimum ({ratio:.2f})" if ratio < 1.0 else "Risk/reward accepted")
+
+    matches = re.findall(r"-?\d+(?:\.\d+)?", bp.risk_reward_assessment or "")
+    if not matches:
+        return False, "Risk/reward unavailable"
+
+    ratio = float(matches[-1])
+    if ratio < 1.0:
+        return False, f"Risk/reward below minimum ({ratio:.2f})"
+    return True, "Risk/reward accepted"
+
+
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
+    rvol_quality, rvol_quality_reason = _classify_rvol_quality(analysis, cfg, now_utc)
 
     thresholds = {
         "min_rvol": cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol,
         "min_setup": cfg.v4_opening_min_setup_score if phase == "OPENING" else cfg.v4_normal_min_setup_score,
         "phase": phase,
+        "rvol_quality": rvol_quality,
+        "rvol_quality_reason": rvol_quality_reason,
+        "rvol": md.relative_volume,
     }
 
     if md.price is None:
@@ -170,10 +244,15 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     if analysis.signal == "SHORT" and analysis.direction_bias != "SHORT_BIAS":
         return False, "SHORT signal requires SHORT_BIAS", thresholds
 
-    if md.relative_volume is None or md.relative_volume < thresholds["min_rvol"]:
-        return False, f"Relative volume below {phase} threshold", thresholds
     if analysis.setup_score < thresholds["min_setup"]:
         return False, f"Setup score below {phase} threshold", thresholds
+
+    if rvol_quality == "RELIABLE":
+        if md.relative_volume is None or md.relative_volume < thresholds["min_rvol"]:
+            return False, f"Relative volume below {phase} threshold", thresholds
+        thresholds["rvol_gate"] = "PASSED"
+    else:
+        thresholds["rvol_gate"] = "BYPASSED_DATA_LIMITED"
 
     if analysis.market_alignment != "UNKNOWN" and analysis.market_alignment != "MARKET_ALIGNED":
         return False, "Market alignment filter rejected setup", thresholds
@@ -185,12 +264,18 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     if analysis.signal == "SHORT" and not bearish_structure:
         return False, "No valid bearish structure", thresholds
 
-    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase)
+    rr_ok, rr_reason = _is_risk_reward_acceptable(analysis)
+    if not rr_ok:
+        return False, rr_reason, thresholds
+
+    strict_confirmation = rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}
+    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase, strict=strict_confirmation)
     if not price_confirmed:
         return False, confirmation, thresholds
 
     thresholds["trigger"] = trigger
     thresholds["confirmation"] = confirmation
+    thresholds["confirmation_mode"] = "STRICT" if strict_confirmation else "STANDARD"
 
     if opening_range_window and analysis.market_data.breakout_state not in {"BREAKOUT", "BREAKDOWN"}:
         return False, "OPENING RANGE DEVELOPING", thresholds
@@ -207,6 +292,17 @@ def _determine_event(
 ) -> dict | None:
     symbol_state = state.setdefault("symbols", {}).setdefault(analysis.symbol, {})
     prev_signal = symbol_state.get("last_signal", "WAIT")
+
+    phase = _v4_session_phase(now, cfg)
+    min_rvol = cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol
+    rvol_quality, _ = _classify_rvol_quality(analysis, cfg, now)
+    rvol_value = analysis.market_data.relative_volume
+    rvol_text = f"{rvol_value:.2f}" if isinstance(rvol_value, (int, float)) else "Unavailable"
+    if rvol_quality == "RELIABLE":
+        volume_note = "passed volume gate" if isinstance(rvol_value, (int, float)) and rvol_value >= min_rvol else "below volume gate"
+    else:
+        volume_note = "evaluating price confirmation"
+    print(f"{analysis.symbol}: {analysis.direction_bias} | Phase {phase} | RVOL {rvol_text} | RVOL {rvol_quality} | {volume_note}")
 
     signal = analysis.signal
     price = analysis.market_data.price
@@ -242,11 +338,14 @@ def _determine_event(
             emoji = "🎯"
             title = "TARGET REACHED"
 
-    v4 = {"phase": _v4_session_phase(now, cfg)}
+    v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
     if event_type is None:
         is_confirmable, live_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
         if not is_confirmable:
-            print(f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | {live_reason}. No alert generated.")
+            print(
+                f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
+                f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | {live_reason}. No alert generated."
+            )
             return None
 
         if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
@@ -295,6 +394,7 @@ def _determine_event(
         "timestamp_market": analysis.market_data.intraday_timestamp or analysis.market_data.data_timestamp,
         "level_unavailable_reason": analysis.battle_plan.level_unavailable_reason,
         "rvol": analysis.market_data.relative_volume,
+        "rvol_quality": v4.get("rvol_quality", rvol_quality),
         "phase": v4["phase"],
         "v4_trigger": v4.get("trigger"),
         "v4_confirmation": v4.get("confirmation"),
@@ -412,7 +512,16 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
         if signal == "LONG"
         else "5-minute close below support with selling-volume expansion."
     )
-    rvol_line = f"RVOL: {alert.get('rvol'):.2f}" if isinstance(alert.get("rvol"), (int, float)) else "RVOL: Unavailable"
+    rvol_quality = alert.get("rvol_quality")
+    if isinstance(alert.get("rvol"), (int, float)):
+        if rvol_quality:
+            rvol_line = f"RVOL: {alert.get('rvol'):.2f} ({rvol_quality})"
+        else:
+            rvol_line = f"RVOL: {alert.get('rvol'):.2f}"
+    elif rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}:
+        rvol_line = f"RVOL: {rvol_quality}"
+    else:
+        rvol_line = "RVOL: Unavailable"
 
     header = "🚨 V4 LONG ALERT" if signal == "LONG" else "🚨 V4 SHORT ALERT"
     return (
