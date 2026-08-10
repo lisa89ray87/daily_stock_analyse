@@ -13,6 +13,8 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append("# DAILY STOCK ANALYSIS")
     lines.append("")
     lines.append(f"Generated UTC: {report.generated_at_utc.isoformat()}")
+    lines.append(f"Generated: {report.generated_at_malaysia}")
+    lines.append(f"Next U.S. Regular Market Open: {report.next_us_market_open_malaysia}")
     lines.append(f"Session: {report.session_label}")
     lines.append("")
 
@@ -40,10 +42,16 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
         lines.append(f"- Confirmation Needed: {x.confirmation_needed}")
         lines.append(f"- Invalidation: {x.battle_plan.invalidation}")
 
-    lines.append("\n## Top Opportunities")
+    lines.append("\n## TOP OPPORTUNITIES")
     lines.append(f"- Best LONG: {report.best_long}")
+    lines.append(f"- Closest LONG Candidate: {report.closest_long_candidate}")
     lines.append(f"- Best SHORT: {report.best_short}")
+    lines.append(f"- Closest SHORT Candidate: {report.closest_short_candidate}")
     lines.append(f"- Best Overall: {report.best_overall}")
+
+    lines.append("\n## FIXED SIX")
+    for sym in report.fixed_symbols:
+        lines.append(f"- {sym}")
 
     lines.append("\n## Overnight / Pre-market")
     for analysis in report.analyses:
@@ -59,6 +67,17 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append("\n## Core Conclusion")
     for analysis in report.analyses:
         lines.extend(_stock_core(analysis))
+
+    lines.append("\n## Data Quality")
+    for analysis in report.analyses:
+        if analysis.data_quality.warnings:
+            lines.append(f"- {analysis.symbol}: {', '.join(analysis.data_quality.warnings)}")
+        else:
+            lines.append(f"- {analysis.symbol}: OK")
+
+    lines.append("\n## Selection Metadata")
+    lines.append(f"- Fixed symbols: {', '.join(report.fixed_symbols)}")
+    lines.append(f"- Dynamic symbols selected: {', '.join(report.dynamic_symbols) if report.dynamic_symbols else 'NONE'}")
 
     if ai_overlay:
         lines.append("\n## AI Overlay")
@@ -82,11 +101,22 @@ def render_html(report: DailyAnalysisReport, template_dir: Path) -> str:
     dynamic_set = set(report.dynamic_symbols)
 
     fixed_analyses = [x for x in report.analyses if x.symbol in fixed_set]
-    dynamic_analyses = [x for x in report.analyses if x.symbol in dynamic_set]
+    dynamic_analyses = [x for x in report.analyses if x.symbol in dynamic_set and x.symbol not in fixed_set]
+
+    watchlist_symbols = {x.symbol for x in report.day_trading_watchlist}
+    top_opportunity_symbols: set[str] = set()
+    for analysis in report.analyses:
+        if analysis.symbol in watchlist_symbols:
+            continue
+        if analysis.signal in {"LONG", "SHORT"}:
+            top_opportunity_symbols.add(analysis.symbol)
+
+    fixed_analyses_prominent = [x for x in fixed_analyses if x.symbol not in watchlist_symbols and x.symbol not in top_opportunity_symbols]
 
     return template.render(
         report=report,
         fixed_analyses=fixed_analyses,
+        fixed_analyses_prominent=fixed_analyses_prominent,
         dynamic_analyses=dynamic_analyses,
         generated_local=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     )
@@ -131,8 +161,18 @@ def _stock_core(analysis: StockAnalysis) -> list[str]:
         out.append("  - None")
 
     out.append(f"- Entry Trigger: {analysis.battle_plan.entry_area}")
+    out.append(
+        f"- Entry Trigger Price: {_fmt(analysis.battle_plan.entry_trigger_price)}"
+    )
+    out.append(f"- Confirmation Level: {_fmt(analysis.battle_plan.confirmation_level)}")
     out.append(f"- Confirmation Needed: {analysis.confirmation_needed}")
+    out.append(f"- Target 1: {_fmt(analysis.battle_plan.target_1)}")
+    out.append(f"- Target 2: {_fmt(analysis.battle_plan.target_2)}")
     out.append(f"- Invalidation: {analysis.battle_plan.invalidation}")
+    out.append(f"- Invalidation Price: {_fmt(analysis.battle_plan.invalidation_price)}")
+    if analysis.battle_plan.level_unavailable_reason:
+        out.append(f"- Exact entry level: UNAVAILABLE")
+        out.append(f"- Reason: {analysis.battle_plan.level_unavailable_reason}")
     out.append("")
     return out
 

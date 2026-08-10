@@ -64,6 +64,19 @@ class AppConfig:
     day_trade_gap_threshold: float
     day_trade_rvol_threshold: float
     day_trade_min_setup_score: int
+    morning_report_time: str
+    morning_report_timezone: str
+    live_alert_enabled: bool
+    live_alert_interval_minutes: int
+    live_market_timezone: str
+    live_market_open: str
+    live_market_close: str
+    alert_min_setup_score: int
+    alert_min_rvol: float
+    alert_cooldown_minutes: int
+    telegram_enabled: bool
+    telegram_bot_token: str | None
+    telegram_chat_id: str | None
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -150,7 +163,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         fixed_watchlist=fixed,
         candidate_universe=universe,
         score_weights=weights,
-        schedule_utc_cron=os.getenv("DAILY_REPORT_CRON_UTC", "0 23 * * 1-5"),
+        schedule_utc_cron=os.getenv("DAILY_REPORT_CRON_UTC", "0 0 * * 1-5"),
         min_setup_score=_env_int("MIN_SETUP_SCORE", 60),
         min_relative_volume=_env_float("MIN_RELATIVE_VOLUME", 1.15),
         day_trade_threshold=_env_int("DAY_TRADE_THRESHOLD", 72),
@@ -160,4 +173,17 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         day_trade_gap_threshold=_env_float("DAY_TRADE_GAP_THRESHOLD", 3.0),
         day_trade_rvol_threshold=_env_float("DAY_TRADE_RVOL_THRESHOLD", 1.5),
         day_trade_min_setup_score=_env_int("DAY_TRADE_MIN_SETUP_SCORE", 65),
+        morning_report_time=os.getenv("MORNING_REPORT_TIME", "08:00"),
+        morning_report_timezone=os.getenv("MORNING_REPORT_TIMEZONE", "Asia/Kuala_Lumpur"),
+        live_alert_enabled=_env_flag("LIVE_ALERT_ENABLED", True),
+        live_alert_interval_minutes=_env_int("LIVE_ALERT_INTERVAL_MINUTES", 5),
+        live_market_timezone=os.getenv("LIVE_MARKET_TIMEZONE", "America/New_York"),
+        live_market_open=os.getenv("LIVE_MARKET_OPEN", "09:30"),
+        live_market_close=os.getenv("LIVE_MARKET_CLOSE", "16:00"),
+        alert_min_setup_score=_env_int("ALERT_MIN_SETUP_SCORE", 70),
+        alert_min_rvol=_env_float("ALERT_MIN_RVOL", 1.5),
+        alert_cooldown_minutes=_env_int("ALERT_COOLDOWN_MINUTES", 15),
+        telegram_enabled=_env_flag("TELEGRAM_ENABLED", False),
+        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
     )

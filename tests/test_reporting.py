@@ -55,6 +55,8 @@ def _sample_report() -> DailyAnalysisReport:
     hynix = _sample_stock("SKHY", "SK hynix")
     return DailyAnalysisReport(
         generated_at_utc=datetime.now(UTC),
+        generated_at_malaysia="2026-08-10 08:00 +08",
+        next_us_market_open_malaysia="2026-08-10 21:30 +08",
         session_label="Session",
         fixed_symbols=["AMD", "SKHY"],
         dynamic_symbols=["AAPL"],
@@ -70,8 +72,10 @@ def _sample_report() -> DailyAnalysisReport:
         day_trading_watchlist=[amd],
         top3_bullish=[amd],
         top3_bearish=[amd],
-        best_long="AMD | Bias: LONG_BIAS | Status: WAIT",
-        best_short="NO HIGH-CONVICTION SETUP",
+        best_long="NONE",
+        best_short="NONE",
+        closest_long_candidate="AMD | Bias: LONG_BIAS | Status: LONG",
+        closest_short_candidate="NONE",
         best_overall="AMD | Bias: LONG_BIAS | Status: WAIT",
     )
 
@@ -81,10 +85,14 @@ def test_html_render_contains_header_and_mobile_table_wrapper():
     html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
     assert "DAILY STOCK ANALYSIS" in html
     assert "table-wrap" in html
+    assert "overflow-x: auto" in html
     assert "Prev Close" in html
+    assert "TOP OPPORTUNITIES" in html
+    assert "Closest LONG Candidate" in html
 
 
 def test_html_contains_sk_hynix_labeling():
     report = _sample_report()
     html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
-    assert "SK hynix" in html
+    assert "SKHY" in html
+    assert "Dynamic Three" not in html

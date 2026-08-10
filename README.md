@@ -102,6 +102,25 @@ Day-trading and setup thresholds:
 - `LONG_THRESHOLD`
 - `DYNAMIC_COUNT`
 
+Morning and live-alert scheduling config:
+
+- `MORNING_REPORT_TIME` (default `08:00`)
+- `MORNING_REPORT_TIMEZONE` (default `Asia/Kuala_Lumpur`)
+- `LIVE_ALERT_ENABLED` (default `1`)
+- `LIVE_ALERT_INTERVAL_MINUTES` (default `5`)
+- `LIVE_MARKET_TIMEZONE` (default `America/New_York`)
+- `LIVE_MARKET_OPEN` (default `09:30`)
+- `LIVE_MARKET_CLOSE` (default `16:00`)
+- `ALERT_MIN_SETUP_SCORE` (default `70`)
+- `ALERT_MIN_RVOL` (default `1.5`)
+- `ALERT_COOLDOWN_MINUTES` (default `15`)
+
+Telegram live-alert config:
+
+- `TELEGRAM_ENABLED` (default `0`)
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+
 Disable sending while still generating report:
 
 - `SEND_EMAIL=0`
@@ -126,27 +145,37 @@ No-email mode:
 SEND_EMAIL=0 python -m src.daily_stock_analyse
 ```
 
+Live alert dry-run:
+
+```bash
+SEND_EMAIL=0 python -m src.daily_stock_analyse.live_alerts
+```
+
 Outputs are written to `artifacts/`:
 
 - `daily_stock_analysis.md`
 - `daily_stock_analysis.html`
 - `daily_stock_analysis.json`
+- `live_alerts.json`
+- `alert_state.json`
 
 ## GitHub Actions
 
 Workflow file:
 
 - `.github/workflows/daily_stock_analysis.yml`
+- `.github/workflows/live_stock_alerts.yml`
 
 Supports:
 
 - Manual run (`workflow_dispatch`)
-- Scheduled weekdays via UTC cron (default `0 23 * * 1-5`)
+- Morning report scheduled weekdays via UTC cron (`0 0 * * 1-5`, 08:00 Asia/Kuala_Lumpur)
+- Live alert workflow scheduled every 5 minutes on weekdays (`*/5 * * * 1-5`)
 
 Timezone note:
 
-- `23:00 UTC` corresponds to approximately `07:00` Malaysia time on the next day.
-- This is configured for morning research delivery and is not a US market-open claim.
+- The application validates `America/New_York` market-open status on each live run.
+- U.S. daylight saving time is handled via timezone-aware logic.
 
 ### Required GitHub Secrets
 
@@ -158,6 +187,26 @@ Timezone note:
 Optional GitHub Variable:
 
 - `DAILY_REPORT_CRON_UTC`
+
+## Telegram Alerts
+
+Telegram is used for concise live state-transition alerts during U.S. regular market hours.
+
+Setup steps:
+
+1. Create a Telegram bot using BotFather.
+2. Copy the bot token provided by BotFather.
+3. Start a conversation with your bot in Telegram.
+4. Obtain your chat ID.
+5. Add these as GitHub Actions secrets:
+	- `TELEGRAM_BOT_TOKEN`
+	- `TELEGRAM_CHAT_ID`
+
+Notes:
+
+- Do not commit token/chat ID values into the repository.
+- The morning 08:00 Malaysia HTML report remains email-based.
+- Telegram is reserved for concise live alert messages.
 
 ## Error Handling Behavior
 

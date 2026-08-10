@@ -63,6 +63,9 @@
       }
       .table-wrap {
         overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        border: 1px solid #e6edf8;
+        border-radius: 10px;
       }
       table {
         width: 100%;
@@ -79,6 +82,7 @@
       }
       th {
         color: var(--muted);
+        background: #f7f9ff;
       }
       .grid {
         display: grid;
@@ -133,6 +137,8 @@
       <div class="header">
         <h1>DAILY STOCK ANALYSIS</h1>
         <div class="sub">Generated UTC: {{ report.generated_at_utc.isoformat() }} | Session: {{ report.session_label }}</div>
+        <div class="sub">Generated: {{ report.generated_at_malaysia }}</div>
+        <div class="sub">Next U.S. Regular Market Open: {{ report.next_us_market_open_malaysia }}</div>
       </div>
 
       <div class="section">
@@ -143,7 +149,14 @@
       </div>
 
       <div class="section">
-        <h2>Day Trading Watchlist</h2>
+        <h2>DAY TRADING WATCHLIST</h2>
+        {% if report.day_trading_watchlist %}
+        <ol>
+          {% for s in report.day_trading_watchlist %}
+          <li><strong>{{ s.symbol }}</strong> ({{ s.name }})</li>
+          {% endfor %}
+        </ol>
+        {% endif %}
         {% if report.day_trading_watchlist %}
         <div class="grid">
           {% for s in report.day_trading_watchlist %}
@@ -153,8 +166,16 @@
             <p><strong>Candidate Score:</strong> {{ s.candidate_score }} | <strong>Setup Score:</strong> {{ s.setup_score }}</p>
             <p><strong>Gap:</strong> {{ '%.2f'|format(s.market_data.gap_pct) if s.market_data.gap_pct is not none else 'UNAVAILABLE' }}% | <strong>RVOL:</strong> {{ '%.2f'|format(s.market_data.relative_volume) if s.market_data.relative_volume is not none else 'UNAVAILABLE' }}</p>
             <p><strong>Trend:</strong> {{ s.market_data.trend }} | <strong>Catalyst:</strong> {{ s.intelligence.facts[0] if s.intelligence.facts else 'UNAVAILABLE' }}</p>
-            <p><strong>Confirmation Needed:</strong> {{ s.confirmation_needed }}</p>
+            <p><strong>Entry Trigger:</strong> {{ s.battle_plan.entry_area }}</p>
+            <p><strong>Entry Trigger Price:</strong> {{ '%.2f'|format(s.battle_plan.entry_trigger_price) if s.battle_plan.entry_trigger_price is not none else 'UNAVAILABLE' }}</p>
+            <p><strong>Confirmation:</strong> 5-minute candle closes above/below {{ '%.2f'|format(s.battle_plan.confirmation_level) if s.battle_plan.confirmation_level is not none else 'UNAVAILABLE' }} with volume expansion.</p>
             <p><strong>Invalidation:</strong> {{ s.battle_plan.invalidation }}</p>
+            <p><strong>Target 1:</strong> {{ '%.2f'|format(s.battle_plan.target_1) if s.battle_plan.target_1 is not none else 'UNAVAILABLE' }}</p>
+            <p><strong>Target 2:</strong> {{ '%.2f'|format(s.battle_plan.target_2) if s.battle_plan.target_2 is not none else 'UNAVAILABLE' }}</p>
+            <p><strong>Risk/Reward:</strong> {{ s.battle_plan.risk_reward_assessment }}</p>
+            {% if s.battle_plan.level_unavailable_reason %}
+            <div class="warn"><strong>Exact entry level: UNAVAILABLE.</strong> {{ s.battle_plan.level_unavailable_reason }}</div>
+            {% endif %}
           </div>
           {% endfor %}
         </div>
@@ -164,9 +185,11 @@
       </div>
 
       <div class="section">
-        <h2>Top Opportunities</h2>
+        <h2>TOP OPPORTUNITIES</h2>
         <p><strong>Best LONG:</strong> {{ report.best_long }}</p>
+        <p><strong>Closest LONG Candidate:</strong> {{ report.closest_long_candidate }}</p>
         <p><strong>Best SHORT:</strong> {{ report.best_short }}</p>
+        <p><strong>Closest SHORT Candidate:</strong> {{ report.closest_short_candidate }}</p>
         <p><strong>Best Overall:</strong> {{ report.best_overall }}</p>
       </div>
 
@@ -205,14 +228,21 @@
 
       <div class="section">
         <h2>Fixed Six</h2>
+        {% for sym in report.fixed_symbols %}
+        <div class="pill">{{ sym }}</div>
+        {% endfor %}
+      </div>
+
+      <div class="section">
+        <h2>Data Quality</h2>
         <div class="grid">
-          {% for s in fixed_analyses %}
+          {% for s in report.analyses %}
           <div class="card">
-            <h3>{{ s.symbol }} - {{ s.name }}</h3>
-            <p><strong>Signal:</strong> <span class="signal-{{ s.signal }}">{{ s.signal }}</span> | <strong>Horizon:</strong> {{ s.trading_horizon }}</p>
-            <p><strong>Reason:</strong> {{ s.main_reason }}</p>
+            <h3>{{ s.symbol }}</h3>
             {% if s.data_quality.warnings %}
-            <div class="warn">Data limitation: {{ s.data_quality.warnings|join(', ') }}</div>
+            <div class="warn">{{ s.data_quality.warnings|join(', ') }}</div>
+            {% else %}
+            <p>OK</p>
             {% endif %}
           </div>
           {% endfor %}
@@ -220,17 +250,9 @@
       </div>
 
       <div class="section">
-        <h2>Dynamic Three</h2>
-        <div class="grid">
-          {% for s in dynamic_analyses %}
-          <div class="card">
-            <h3>{{ s.symbol }} - {{ s.name }}</h3>
-            <p><strong>Bias:</strong> {{ s.direction_bias }} | <strong>Status:</strong> <span class="signal-{{ s.signal }}">{{ s.signal }}</span></p>
-            <p><strong>Entry Trigger:</strong> {{ s.battle_plan.entry_area }}</p>
-            <p><strong>Confirmation:</strong> {{ s.confirmation_needed }}</p>
-          </div>
-          {% endfor %}
-        </div>
+        <h2>Selection Metadata</h2>
+        <p><strong>Dynamic symbols selected:</strong> {{ report.dynamic_symbols|join(', ') if report.dynamic_symbols else 'NONE' }}</p>
+        <p><strong>Selected analyses count:</strong> {{ report.analyses|length }}</p>
       </div>
 
       <div class="section risk">

@@ -36,6 +36,19 @@ def _cfg() -> AppConfig:
         day_trade_gap_threshold=3.0,
         day_trade_rvol_threshold=1.5,
         day_trade_min_setup_score=65,
+        morning_report_time="08:00",
+        morning_report_timezone="Asia/Kuala_Lumpur",
+        live_alert_enabled=True,
+        live_alert_interval_minutes=5,
+        live_market_timezone="America/New_York",
+        live_market_open="09:30",
+        live_market_close="16:00",
+        alert_min_setup_score=70,
+        alert_min_rvol=1.5,
+        alert_cooldown_minutes=15,
+        telegram_enabled=False,
+        telegram_bot_token=None,
+        telegram_chat_id=None,
     )
 
 

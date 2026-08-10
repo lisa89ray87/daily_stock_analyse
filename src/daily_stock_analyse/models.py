@@ -76,6 +76,12 @@ class BattlePlan:
     target_area: str
     invalidation: str
     risk_reward_assessment: str
+    entry_trigger_price: float | None = None
+    confirmation_level: float | None = None
+    invalidation_price: float | None = None
+    target_1: float | None = None
+    target_2: float | None = None
+    level_unavailable_reason: str | None = None
 
 
 @dataclass
@@ -138,6 +144,8 @@ class MarketRegime:
 @dataclass
 class DailyAnalysisReport:
     generated_at_utc: datetime
+    generated_at_malaysia: str
+    next_us_market_open_malaysia: str
     session_label: str
     fixed_symbols: list[str]
     dynamic_symbols: list[str]
@@ -148,5 +156,7 @@ class DailyAnalysisReport:
     top3_bearish: list[StockAnalysis]
     best_long: str
     best_short: str
+    closest_long_candidate: str
+    closest_short_candidate: str
     best_overall: str
     notes: list[str] = field(default_factory=list)

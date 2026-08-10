@@ -1,15 +1,15 @@
-name: Daily Stock Analysis
+name: Live Stock Alerts
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * 1-5"
+    - cron: "*/5 * * * 1-5"
 
 env:
-  SEND_EMAIL: "1"
+  SEND_EMAIL: "0"
 
 jobs:
-  analyze:
+  live-alerts:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,13 +25,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run analysis
+      - name: Restore alert state
+        id: restore-alert-state
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/alert_state.json
+          key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            live-alert-state-${{ github.ref_name }}-
+
+      - name: Run live alerts
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          DAILY_REPORT_CRON_UTC: ${{ vars.DAILY_REPORT_CRON_UTC }}
           MIN_SETUP_SCORE: ${{ vars.MIN_SETUP_SCORE }}
           MIN_RELATIVE_VOLUME: ${{ vars.MIN_RELATIVE_VOLUME }}
           DAY_TRADE_THRESHOLD: ${{ vars.DAY_TRADE_THRESHOLD }}
@@ -51,11 +59,21 @@ jobs:
           ALERT_MIN_SETUP_SCORE: ${{ vars.ALERT_MIN_SETUP_SCORE }}
           ALERT_MIN_RVOL: ${{ vars.ALERT_MIN_RVOL }}
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
-        run: python -m src.daily_stock_analyse
+          TELEGRAM_ENABLED: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m src.daily_stock_analyse.live_alerts
 
-      - name: Upload report artifacts
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/alert_state.json
+          key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload live artifacts
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: daily-stock-analysis-report
+          name: live-stock-alert-artifacts
           path: artifacts/
