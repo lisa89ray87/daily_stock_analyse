@@ -1,0 +1,46 @@
+{
+  "fixed_watchlist": [
+    "NOK",
+    "AMD",
+    "NVDA",
+    "INTC",
+    "SNDK",
+    "000660.KS"
+  ],
+  "candidate_universe": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "AVGO",
+    "QCOM",
+    "MU",
+    "ASML",
+    "ARM",
+    "SMCI",
+    "PLTR",
+    "SNOW",
+    "CRM",
+    "ADBE",
+    "CSCO",
+    "NFLX",
+    "INTU",
+    "SHOP",
+    "UBER",
+    "PANW",
+    "CRWD",
+    "DDOG",
+    "MDB"
+  ],
+  "score_weights": {
+    "trend": 0.2,
+    "momentum": 0.15,
+    "volume": 0.1,
+    "relative_strength": 0.1,
+    "fundamentals_news": 0.2,
+    "catalyst_event": 0.1,
+    "risk_reward": 0.15
+  }
+}

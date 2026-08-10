@@ -1,0 +1,42 @@
+name: Daily Stock Analysis
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 23 * * 1-5"
+
+env:
+  SEND_EMAIL: "1"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run analysis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          DAILY_REPORT_CRON_UTC: ${{ vars.DAILY_REPORT_CRON_UTC }}
+        run: python -m src.daily_stock_analyse
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-stock-analysis-report
+          path: artifacts/
