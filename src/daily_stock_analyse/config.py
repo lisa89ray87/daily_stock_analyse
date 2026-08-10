@@ -83,7 +83,10 @@ def _env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+    value = raw.strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "y", "on"}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -187,7 +190,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         live_alert_interval_minutes=_env_int("LIVE_ALERT_INTERVAL_MINUTES", 5),
         live_market_timezone=_env_nonempty_str("LIVE_MARKET_TIMEZONE", "America/New_York"),
         live_market_open=_env_nonempty_str("LIVE_MARKET_OPEN", "09:30"),
-        live_market_close=os.getenv("LIVE_MARKET_CLOSE", "16:00"),
+        live_market_close=_env_nonempty_str("LIVE_MARKET_CLOSE", "16:00"),
         alert_min_setup_score=_env_int("ALERT_MIN_SETUP_SCORE", 70),
         alert_min_rvol=_env_float("ALERT_MIN_RVOL", 1.5),
         alert_cooldown_minutes=_env_int("ALERT_COOLDOWN_MINUTES", 15),

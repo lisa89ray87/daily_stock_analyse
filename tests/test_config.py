@@ -138,3 +138,27 @@ def test_live_market_open_explicit_0930_preserved(monkeypatch):
     assert cfg.live_market_open == "09:30"
     assert _parse_hhmm(cfg.live_market_open).hour == 9
     assert _parse_hhmm(cfg.live_market_open).minute == 30
+
+
+def test_live_alert_enabled_missing_uses_default_true(monkeypatch):
+    monkeypatch.delenv("LIVE_ALERT_ENABLED", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_alert_enabled is True
+
+
+def test_live_alert_enabled_empty_uses_default_true(monkeypatch):
+    monkeypatch.setenv("LIVE_ALERT_ENABLED", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_alert_enabled is True
+
+
+def test_live_alert_interval_default_is_5(monkeypatch):
+    monkeypatch.delenv("LIVE_ALERT_INTERVAL_MINUTES", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_alert_interval_minutes == 5
+
+
+def test_live_market_close_default_is_1600(monkeypatch):
+    monkeypatch.delenv("LIVE_MARKET_CLOSE", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_close == "16:00"
