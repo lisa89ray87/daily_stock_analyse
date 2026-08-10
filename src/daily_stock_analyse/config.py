@@ -77,6 +77,12 @@ class AppConfig:
     telegram_enabled: bool
     telegram_bot_token: str | None
     telegram_chat_id: str | None
+    v4_opening_start: str = "09:30"
+    v4_opening_end: str = "10:00"
+    v4_opening_min_rvol: float = 1.20
+    v4_opening_min_setup_score: int = 75
+    v4_normal_min_rvol: float = 1.50
+    v4_normal_min_setup_score: int = 70
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -197,4 +203,10 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         telegram_enabled=_env_flag("TELEGRAM_ENABLED", False),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        v4_opening_start=_env_nonempty_str("V4_OPENING_START", "09:30"),
+        v4_opening_end=_env_nonempty_str("V4_OPENING_END", "10:00"),
+        v4_opening_min_rvol=_env_float("V4_OPENING_MIN_RVOL", 1.20),
+        v4_opening_min_setup_score=_env_int("V4_OPENING_MIN_SETUP_SCORE", 75),
+        v4_normal_min_rvol=_env_float("V4_NORMAL_MIN_RVOL", 1.50),
+        v4_normal_min_setup_score=_env_int("V4_NORMAL_MIN_SETUP_SCORE", 70),
     )

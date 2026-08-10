@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from src.daily_stock_analyse.config import AppConfig
-from src.daily_stock_analyse.live_alerts import _determine_event, _update_symbol_state
+from src.daily_stock_analyse.live_alerts import _determine_event, _update_symbol_state, _v4_session_phase
 from src.daily_stock_analyse.models import (
     BattlePlan,
     DataQuality,
@@ -164,8 +164,11 @@ def test_target_alert_deduplication():
 
 
 def test_no_alert_when_live_data_unavailable():
-    a = _analysis("PLTR", "LONG", "LONG_BIAS", vwap=None)
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="NO CLEAR BREAK", vwap=None)
     a.market_data.opening_range_high = None
+    a.market_data.opening_range_low = None
+    a.market_data.trend = "RANGE"
+    a.market_data.day_change_pct = 0.0
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
     now = datetime(2026, 8, 10, 14, 40, tzinfo=UTC)
     event = _determine_event(a, state, _cfg(), now, opening_range_window=False)
@@ -208,3 +211,107 @@ def test_state_update_tracks_last_alert_fields():
     assert symbol_state["last_signal"] == "LONG"
     assert symbol_state["last_alert_type"] == "LONG_TARGET_1"
     assert "LONG_TARGET_1" in symbol_state["alerted_targets"]
+
+
+def test_v4_opening_phase_at_0930():
+    cfg = _cfg()
+    phase = _v4_session_phase(datetime(2026, 8, 10, 13, 30, tzinfo=UTC), cfg)
+    assert phase == "OPENING"
+
+
+def test_v4_opening_phase_at_0959():
+    cfg = _cfg()
+    phase = _v4_session_phase(datetime(2026, 8, 10, 13, 59, tzinfo=UTC), cfg)
+    assert phase == "OPENING"
+
+
+def test_v4_normal_phase_at_1000():
+    cfg = _cfg()
+    phase = _v4_session_phase(datetime(2026, 8, 10, 14, 0, tzinfo=UTC), cfg)
+    assert phase == "NORMAL"
+
+
+def test_opening_long_rvol_120_setup_75_qualifies_with_confirmation():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="BREAKOUT")
+    a.setup_score = 75
+    a.market_data.relative_volume = 1.20
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert event["event_type"] == "WAIT_TO_LONG"
+    assert event["phase"] == "OPENING"
+
+
+def test_opening_setup_rvol_119_does_not_qualify():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="BREAKOUT")
+    a.setup_score = 80
+    a.market_data.relative_volume = 1.19
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+
+
+def test_opening_setup_score_74_does_not_qualify():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="BREAKOUT")
+    a.setup_score = 74
+    a.market_data.relative_volume = 1.30
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 13, 35, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+
+
+def test_normal_setup_rvol_149_does_not_qualify():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="BREAKOUT")
+    a.setup_score = 80
+    a.market_data.relative_volume = 1.49
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+
+
+def test_normal_setup_rvol_150_setup_70_qualifies_with_confirmation():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="BREAKOUT")
+    a.setup_score = 70
+    a.market_data.relative_volume = 1.50
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert event["phase"] == "NORMAL"
+
+
+def test_rvol_alone_never_generates_alert():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="NO CLEAR BREAK")
+    a.setup_score = 82
+    a.market_data.relative_volume = 1.60
+    a.market_data.trend = "RANGE"
+    a.market_data.vwap = None
+    a.market_data.opening_range_high = None
+    a.market_data.day_change_pct = 0.0
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 30, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+
+
+def test_missing_vwap_and_opening_range_does_not_fabricate_values():
+    cfg = _cfg()
+    a = _analysis("PLTR", "LONG", "LONG_BIAS", breakout_state="NO CLEAR BREAK", vwap=None)
+    a.market_data.opening_range_high = None
+    a.market_data.opening_range_low = None
+    a.market_data.trend = "RANGE"
+    a.market_data.day_change_pct = 0.0
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 13, 40, tzinfo=UTC)
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None

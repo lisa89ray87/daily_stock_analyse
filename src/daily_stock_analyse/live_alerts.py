@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,9 @@ def run_live_alerts(base_path: Path | None = None) -> int:
         print(f"Market closed: {session.reason}")
         _write_live_snapshot(repo_root, {"market_open": False, "reason": session.reason, "alerts": []})
         return 0
+
+    phase = _v4_session_phase(now, cfg)
+    print(f"V4 phase: {phase}")
 
     market_provider = YFinanceMarketDataProvider()
     news_provider = YFinanceNewsProvider()
@@ -71,6 +74,7 @@ def run_live_alerts(base_path: Path | None = None) -> int:
         {
             "market_open": True,
             "market_reason": session.reason,
+            "v4_phase": phase,
             "opening_range_window": session.opening_range_window,
             "market_time": session.market_now.isoformat(),
             "alerts": sent_alerts,
@@ -96,24 +100,102 @@ def _load_state(path: Path) -> dict:
         return {"symbols": {}, "updated_at": None}
 
 
-def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool) -> tuple[bool, str]:
+def _parse_hhmm(raw: str) -> time:
+    parts = raw.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid HH:MM value: {raw}")
+    return time(hour=int(parts[0]), minute=int(parts[1]))
+
+
+def _v4_session_phase(now_utc: datetime, cfg: AppConfig) -> str:
+    market_now = now_utc.astimezone(ZoneInfo(cfg.live_market_timezone))
+    opening_start = _parse_hhmm(cfg.v4_opening_start)
+    opening_end = _parse_hhmm(cfg.v4_opening_end)
+    if opening_start <= market_now.time() < opening_end:
+        return "OPENING"
+    return "NORMAL"
+
+
+def _price_action_confirmation(analysis: StockAnalysis, phase: str) -> tuple[bool, str, str]:
     md = analysis.market_data
+    signal = analysis.signal
 
     if md.price is None:
-        return False, "Price unavailable"
-    if md.vwap is None and md.opening_range_high is None:
-        return False, "Live confirmation unavailable"
-    if md.relative_volume is None or md.relative_volume < cfg.alert_min_rvol:
-        return False, "Relative volume below live threshold"
-    if analysis.setup_score < cfg.alert_min_setup_score:
-        return False, "Setup score below live threshold"
-    if analysis.battle_plan.entry_trigger_price is None:
-        return False, "Exact entry level unavailable"
+        return False, "Unavailable", "Price unavailable"
+
+    if signal == "LONG":
+        if md.opening_range_high is not None and md.price > md.opening_range_high:
+            return True, "Break above opening range high", "Opening-range breakout confirmed"
+        if md.resistance is not None and md.price > md.resistance:
+            return True, "Break above resistance", "Resistance breakout confirmed"
+        if md.vwap is not None and md.price > md.vwap:
+            return True, "Price above VWAP", "Bullish VWAP confirmation"
+        if md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
+            return True, "Bullish breakout structure", "Breakout state confirmation"
+        if md.trend == "UPTREND" and md.day_change_pct is not None and md.day_change_pct > 0:
+            return True, "Bullish trend continuation", "Positive momentum in uptrend"
+        return False, "Unavailable", "No bullish price-action confirmation"
+
+    if signal == "SHORT":
+        if md.opening_range_low is not None and md.price < md.opening_range_low:
+            return True, "Break below opening range low", "Opening-range breakdown confirmed"
+        if md.support is not None and md.price < md.support:
+            return True, "Break below support", "Support breakdown confirmed"
+        if md.vwap is not None and md.price < md.vwap:
+            return True, "Price below VWAP", "Bearish VWAP confirmation"
+        if md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
+            return True, "Bearish breakdown structure", "Breakdown state confirmation"
+        if md.trend == "DOWNTREND" and md.day_change_pct is not None and md.day_change_pct < 0:
+            return True, "Bearish trend continuation", "Negative momentum in downtrend"
+        return False, "Unavailable", "No bearish price-action confirmation"
+
+    return False, "Unavailable", "Signal is not LONG/SHORT"
+
+
+def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
+    md = analysis.market_data
+    phase = _v4_session_phase(now_utc, cfg)
+
+    thresholds = {
+        "min_rvol": cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol,
+        "min_setup": cfg.v4_opening_min_setup_score if phase == "OPENING" else cfg.v4_normal_min_setup_score,
+        "phase": phase,
+    }
+
+    if md.price is None:
+        return False, "Price unavailable", thresholds
+
+    if analysis.signal == "LONG" and analysis.direction_bias != "LONG_BIAS":
+        return False, "LONG signal requires LONG_BIAS", thresholds
+    if analysis.signal == "SHORT" and analysis.direction_bias != "SHORT_BIAS":
+        return False, "SHORT signal requires SHORT_BIAS", thresholds
+
+    if md.relative_volume is None or md.relative_volume < thresholds["min_rvol"]:
+        return False, f"Relative volume below {phase} threshold", thresholds
+    if analysis.setup_score < thresholds["min_setup"]:
+        return False, f"Setup score below {phase} threshold", thresholds
+
+    if analysis.market_alignment != "UNKNOWN" and analysis.market_alignment != "MARKET_ALIGNED":
+        return False, "Market alignment filter rejected setup", thresholds
+
+    bullish_structure = analysis.signal == "LONG" and (md.trend == "UPTREND" or md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"})
+    bearish_structure = analysis.signal == "SHORT" and (md.trend == "DOWNTREND" or md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"})
+    if analysis.signal == "LONG" and not bullish_structure:
+        return False, "No valid bullish structure", thresholds
+    if analysis.signal == "SHORT" and not bearish_structure:
+        return False, "No valid bearish structure", thresholds
+
+    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase)
+    if not price_confirmed:
+        return False, confirmation, thresholds
+
+    thresholds["trigger"] = trigger
+    thresholds["confirmation"] = confirmation
 
     if opening_range_window and analysis.market_data.breakout_state not in {"BREAKOUT", "BREAKDOWN"}:
-        return False, "OPENING RANGE DEVELOPING"
+        return False, "OPENING RANGE DEVELOPING", thresholds
 
-    return True, "CONFIRMED"
+    return True, "CONFIRMED", thresholds
 
 
 def _determine_event(
@@ -126,14 +208,8 @@ def _determine_event(
     symbol_state = state.setdefault("symbols", {}).setdefault(analysis.symbol, {})
     prev_signal = symbol_state.get("last_signal", "WAIT")
 
-    is_confirmable, live_reason = _is_live_confirmable(analysis, cfg, opening_range_window)
-    if not is_confirmable:
-        print(f"{analysis.symbol}: {analysis.direction_bias} | {live_reason}. No alert generated.")
-        return None
-
     signal = analysis.signal
     price = analysis.market_data.price
-
     target_1 = analysis.battle_plan.target_1
     target_2 = analysis.battle_plan.target_2
     invalidation = analysis.battle_plan.invalidation_price
@@ -141,15 +217,6 @@ def _determine_event(
     event_type = None
     emoji = "🚨"
     title = "DAY TRADE ALERT"
-
-    if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
-        event_type = "WAIT_TO_LONG"
-    elif prev_signal in {"WAIT", "NO_TRADE"} and signal == "SHORT":
-        event_type = "WAIT_TO_SHORT"
-    elif prev_signal == "LONG" and signal not in {"LONG", "WAIT"}:
-        event_type = "LONG_EXIT"
-    elif prev_signal == "SHORT" and signal not in {"SHORT", "WAIT"}:
-        event_type = "SHORT_EXIT"
 
     if prev_signal == "LONG" and invalidation is not None and price is not None and price <= invalidation:
         event_type = "LONG_INVALIDATED"
@@ -174,6 +241,22 @@ def _determine_event(
             event_type = "SHORT_TARGET_2"
             emoji = "🎯"
             title = "TARGET REACHED"
+
+    v4 = {"phase": _v4_session_phase(now, cfg)}
+    if event_type is None:
+        is_confirmable, live_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
+        if not is_confirmable:
+            print(f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | {live_reason}. No alert generated.")
+            return None
+
+        if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
+            event_type = "WAIT_TO_LONG"
+        elif prev_signal in {"WAIT", "NO_TRADE"} and signal == "SHORT":
+            event_type = "WAIT_TO_SHORT"
+        elif prev_signal == "LONG" and signal not in {"LONG", "WAIT"}:
+            event_type = "LONG_EXIT"
+        elif prev_signal == "SHORT" and signal not in {"SHORT", "WAIT"}:
+            event_type = "SHORT_EXIT"
 
     if event_type is None:
         return None
@@ -212,6 +295,9 @@ def _determine_event(
         "timestamp_market": analysis.market_data.intraday_timestamp or analysis.market_data.data_timestamp,
         "level_unavailable_reason": analysis.battle_plan.level_unavailable_reason,
         "rvol": analysis.market_data.relative_volume,
+        "phase": v4["phase"],
+        "v4_trigger": v4.get("trigger"),
+        "v4_confirmation": v4.get("confirmation"),
     }
 
 
@@ -290,6 +376,7 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
     event_type = alert.get("event_type", "")
     symbol = alert["symbol"]
     signal = alert["signal"]
+    phase = alert.get("phase", "NORMAL")
     time_label = _fmt_time_in_tz(alert.get("timestamp_market") or alert.get("timestamp"), market_tz)
 
     if "TARGET" in event_type:
@@ -327,16 +414,18 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
     )
     rvol_line = f"RVOL: {alert.get('rvol'):.2f}" if isinstance(alert.get("rvol"), (int, float)) else "RVOL: Unavailable"
 
-    header = "🚨 LONG ALERT" if signal == "LONG" else "🚨 SHORT ALERT"
+    header = "🚨 V4 LONG ALERT" if signal == "LONG" else "🚨 V4 SHORT ALERT"
     return (
         f"<b>{header}</b>\n\n"
-        f"<b>{symbol}</b>\n\n"
+        f"Symbol: <b>{symbol}</b>\n"
+        f"Phase: {phase}\n"
+        f"Bias: {'LONG' if signal == 'LONG' else 'SHORT'}\n\n"
         f"Setup Score: {alert['setup_score']}/100\n"
         f"Price: {_fmt_price(alert.get('price'))}\n\n"
         "Trigger\n"
-        f"{'Break above' if signal == 'LONG' else 'Break below'} {_fmt_price(alert.get('entry_trigger'))}\n\n"
+        f"{alert.get('v4_trigger') or ('Break above ' + _fmt_price(alert.get('entry_trigger')) if signal == 'LONG' else 'Break below ' + _fmt_price(alert.get('entry_trigger')))}\n\n"
         "Confirmation\n"
-        f"{confirmation_line}\n\n"
+        f"{alert.get('v4_confirmation') or confirmation_line}\n\n"
         "Invalidation\n"
         f"{_fmt_price(alert.get('invalidation'))}\n\n"
         "Target 1\n"
