@@ -90,6 +90,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _normalize_fraction_threshold(value: float) -> float:
+    # Accept both decimal form (0.7) and percentage-like form (70).
+    if value > 1.0:
+        return value / 100.0
+    return value
+
+
 def _load_watchlist_config(base_path: Path) -> tuple[list[str], list[str], dict[str, float]]:
     cfg_path = base_path / "config" / "watchlist.json"
     if not cfg_path.exists():
@@ -144,7 +151,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         min_setup_score=_env_int("MIN_SETUP_SCORE", 60),
         min_relative_volume=_env_float("MIN_RELATIVE_VOLUME", 1.15),
         day_trade_threshold=_env_int("DAY_TRADE_THRESHOLD", 72),
-        short_threshold=_env_float("SHORT_THRESHOLD", 0.28),
-        long_threshold=_env_float("LONG_THRESHOLD", 0.28),
+        short_threshold=_normalize_fraction_threshold(_env_float("SHORT_THRESHOLD", 0.28)),
+        long_threshold=_normalize_fraction_threshold(_env_float("LONG_THRESHOLD", 0.28)),
         dynamic_count=_env_int("DYNAMIC_COUNT", 3),
     )
