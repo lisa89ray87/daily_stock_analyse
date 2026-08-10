@@ -56,6 +56,10 @@ class MarketData:
     provider: str = "unknown"
     data_timestamp: str | None = None
     delayed_note: str = "Latest available provider data (may be delayed)."
+    intraday_bars: list[dict[str, float | str]] = field(default_factory=list)
+    intraday_rvol: float | None = None
+    intraday_rvol_quality: str = "UNAVAILABLE"
+    intraday_rvol_note: str | None = None
 
 
 @dataclass

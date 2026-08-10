@@ -83,6 +83,7 @@ class AppConfig:
     v4_opening_min_setup_score: int = 75
     v4_normal_min_rvol: float = 1.50
     v4_normal_min_setup_score: int = 70
+    v4_opening_range_minutes: int = 30
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -209,4 +210,5 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         v4_opening_min_setup_score=_env_int("V4_OPENING_MIN_SETUP_SCORE", 75),
         v4_normal_min_rvol=_env_float("V4_NORMAL_MIN_RVOL", 1.50),
         v4_normal_min_setup_score=_env_int("V4_NORMAL_MIN_SETUP_SCORE", 70),
+        v4_opening_range_minutes=_env_int("V4_OPENING_RANGE_MINUTES", 30),
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -11,6 +12,7 @@ from .base import MarketDataProvider, NewsProvider
 
 class YFinanceMarketDataProvider(MarketDataProvider):
     provider_name = "yfinance"
+    market_tz = ZoneInfo("America/New_York")
 
     def get_market_data(self, symbol: str) -> MarketData:
         ticker = yf.Ticker(symbol)
@@ -126,22 +128,32 @@ class YFinanceMarketDataProvider(MarketDataProvider):
         else:
             md.regular_session_info = "UNAVAILABLE"
 
-        intraday = ticker.history(period="1d", interval="5m", prepost=True, auto_adjust=False)
-        if not intraday.empty and "Close" in intraday and "Volume" in intraday:
-            intraday = intraday.dropna(subset=["Close", "Volume"])
-            if not intraday.empty:
-                price_x_vol = intraday["Close"] * intraday["Volume"]
-                cum_vol = intraday["Volume"].cumsum()
-                vwap_series = price_x_vol.cumsum() / cum_vol.replace(0, pd.NA)
-                if not vwap_series.dropna().empty:
-                    md.vwap = float(vwap_series.dropna().iloc[-1])
+        intraday = ticker.history(period="1d", interval="5m", prepost=False, auto_adjust=False)
+        intraday_hist = ticker.history(period="30d", interval="5m", prepost=False, auto_adjust=False)
+        bars_today = _prepare_regular_session_bars(intraday, self.market_tz)
 
-                regular = intraday.between_time("09:30", "10:00")
-                if not regular.empty and "High" in regular and "Low" in regular:
-                    md.opening_range_high = float(regular["High"].max())
-                    md.opening_range_low = float(regular["Low"].min())
+        if not bars_today.empty:
+            md.intraday_bars = _bars_to_payload(bars_today)
+            md.intraday_timestamp = datetime.now(UTC).isoformat()
 
-                md.intraday_timestamp = datetime.now(UTC).isoformat()
+            md.price = float(bars_today["Close"].iloc[-1])
+            md.regular_price = md.price
+
+            price_x_vol = bars_today["Close"] * bars_today["Volume"]
+            cum_vol = bars_today["Volume"].cumsum()
+            vwap_series = price_x_vol.cumsum() / cum_vol.replace(0, pd.NA)
+            if not vwap_series.dropna().empty:
+                md.vwap = float(vwap_series.dropna().iloc[-1])
+
+            regular = bars_today.between_time("09:30", "10:00")
+            if not regular.empty and "High" in regular and "Low" in regular:
+                md.opening_range_high = float(regular["High"].max())
+                md.opening_range_low = float(regular["Low"].min())
+
+            rvol_value, rvol_quality, rvol_note = _time_normalized_intraday_rvol(bars_today, intraday_hist, self.market_tz)
+            md.intraday_rvol = rvol_value
+            md.intraday_rvol_quality = rvol_quality
+            md.intraday_rvol_note = rvol_note
 
         now_ts = datetime.now(UTC).isoformat()
         md.regular_session_timestamp = now_ts
@@ -268,3 +280,84 @@ def _compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int)
     if atr.empty:
         return None
     return float(atr.iloc[-1])
+
+
+def _prepare_regular_session_bars(frame: pd.DataFrame, market_tz: ZoneInfo) -> pd.DataFrame:
+    if frame.empty or not {"Open", "High", "Low", "Close", "Volume"}.issubset(frame.columns):
+        return pd.DataFrame()
+
+    df = frame.copy()
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(UTC)
+    df.index = df.index.tz_convert(market_tz)
+    regular = df.between_time("09:30", "16:00")
+    if regular.empty:
+        return pd.DataFrame()
+
+    session_date = regular.index.max().date()
+    same_day = regular[regular.index.date == session_date]
+    return same_day.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+
+def _bars_to_payload(frame: pd.DataFrame) -> list[dict[str, float | str]]:
+    out: list[dict[str, float | str]] = []
+    for ts, row in frame.iterrows():
+        out.append(
+            {
+                "ts": ts.isoformat(),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": float(row["Volume"]),
+            }
+        )
+    return out
+
+
+def _time_normalized_intraday_rvol(
+    today_bars: pd.DataFrame,
+    intraday_hist: pd.DataFrame,
+    market_tz: ZoneInfo,
+) -> tuple[float | None, str, str]:
+    if today_bars.empty or "Volume" not in today_bars:
+        return None, "UNAVAILABLE", "No regular-session intraday volume"
+
+    current_tod = today_bars.index.max().time()
+    current_cum = float(today_bars["Volume"].sum())
+    if current_cum <= 0:
+        return None, "UNAVAILABLE", "Current intraday cumulative volume is zero"
+
+    if intraday_hist.empty or "Volume" not in intraday_hist:
+        return None, "UNAVAILABLE", "Historical intraday data unavailable"
+
+    hist = intraday_hist.copy()
+    if hist.index.tz is None:
+        hist.index = hist.index.tz_localize(UTC)
+    hist.index = hist.index.tz_convert(market_tz)
+    hist = hist.between_time("09:30", "16:00")
+    if hist.empty:
+        return None, "UNAVAILABLE", "No historical regular-session bars"
+
+    grouped = hist.groupby(hist.index.date)
+    today_date = today_bars.index.max().date()
+    baseline: list[float] = []
+
+    for day, bars in grouped:
+        if day == today_date:
+            continue
+        upto = bars[bars.index.time <= current_tod]
+        if upto.empty:
+            continue
+        cum = float(upto["Volume"].sum())
+        if cum > 0:
+            baseline.append(cum)
+
+    if len(baseline) < 5:
+        return None, "DATA_LIMITED", "Insufficient historical intraday baseline sessions"
+
+    baseline_avg = sum(baseline) / len(baseline)
+    if baseline_avg <= 0:
+        return None, "DATA_LIMITED", "Historical intraday baseline volume is zero"
+
+    return current_cum / baseline_avg, "RELIABLE", "Time-normalized intraday RVOL"

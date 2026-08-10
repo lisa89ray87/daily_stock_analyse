@@ -119,6 +119,12 @@ def _v4_session_phase(now_utc: datetime, cfg: AppConfig) -> str:
 
 def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: datetime) -> tuple[str, str]:
     md = analysis.market_data
+    if md.intraday_rvol is not None and md.intraday_rvol_quality == "RELIABLE":
+        return "RELIABLE", md.intraday_rvol_note or "Time-normalized intraday RVOL"
+
+    if md.intraday_rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}:
+        return md.intraday_rvol_quality, md.intraday_rvol_note or "Intraday RVOL quality is limited"
+
     if md.relative_volume is None:
         return "UNAVAILABLE", "RVOL missing from provider"
 
@@ -144,52 +150,84 @@ def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: dat
     return "RELIABLE", "RVOL baseline and timestamp are valid"
 
 
-def _price_action_confirmation(analysis: StockAnalysis, phase: str, strict: bool = False) -> tuple[bool, str, str]:
+def _intended_direction(analysis: StockAnalysis) -> str:
+    if analysis.signal in {"LONG", "SHORT"}:
+        return analysis.signal
+    if analysis.direction_bias == "LONG_BIAS":
+        return "LONG"
+    if analysis.direction_bias == "SHORT_BIAS":
+        return "SHORT"
+    return "WAIT"
+
+
+def _intraday_bars(md) -> list[dict]:
+    out: list[dict] = []
+    for bar in md.intraday_bars or []:
+        try:
+            out.append(
+                {
+                    "ts": datetime.fromisoformat(str(bar["ts"])),
+                    "open": float(bar["open"]),
+                    "high": float(bar["high"]),
+                    "low": float(bar["low"]),
+                    "close": float(bar["close"]),
+                    "volume": float(bar["volume"]),
+                }
+            )
+        except Exception:
+            continue
+    out.sort(key=lambda x: x["ts"])
+    return out
+
+
+def _ema(values: list[float], span: int) -> float | None:
+    if not values:
+        return None
+    alpha = 2.0 / (span + 1.0)
+    ema_value = values[0]
+    for v in values[1:]:
+        ema_value = (alpha * v) + ((1.0 - alpha) * ema_value)
+    return ema_value
+
+
+def _compute_intraday_context(analysis: StockAnalysis, cfg: AppConfig) -> dict:
     md = analysis.market_data
-    signal = analysis.signal
+    bars = _intraday_bars(md)
+    closes = [b["close"] for b in bars]
+    highs = [b["high"] for b in bars]
+    lows = [b["low"] for b in bars]
+    volumes = [b["volume"] for b in bars]
 
-    if md.price is None:
-        return False, "Unavailable", "Price unavailable"
+    session_vwap = None
+    if closes and volumes and sum(volumes) > 0:
+        session_vwap = sum((c * v) for c, v in zip(closes, volumes)) / sum(volumes)
 
-    if signal == "LONG":
-        if md.opening_range_high is not None and md.price > md.opening_range_high:
-            return True, "Break above opening range high", "Opening-range breakout confirmed"
-        if md.resistance is not None and md.price > md.resistance:
-            return True, "Break above resistance", "Resistance breakout confirmed"
-        if strict and md.vwap is not None and md.price > md.vwap and md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
-            return True, "Breakout above VWAP", "Strict bullish VWAP+breakout confirmation"
-        if strict and md.trend == "UPTREND" and md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
-            return True, "Uptrend breakout structure", "Strict trend+breakout confirmation"
-        if strict:
-            return False, "Unavailable", "No bullish price-action confirmation (strict)"
-        if md.vwap is not None and md.price > md.vwap:
-            return True, "Price above VWAP", "Bullish VWAP confirmation"
-        if md.breakout_state in {"BREAKOUT", "NEAR BREAKOUT"}:
-            return True, "Bullish breakout structure", "Breakout state confirmation"
-        if md.trend == "UPTREND" and md.day_change_pct is not None and md.day_change_pct > 0:
-            return True, "Bullish trend continuation", "Positive momentum in uptrend"
-        return False, "Unavailable", "No bullish price-action confirmation"
+    or_high = md.opening_range_high
+    or_low = md.opening_range_low
+    if bars:
+        first_ts = bars[0]["ts"]
+        cutoff = first_ts + timedelta(minutes=max(5, cfg.v4_opening_range_minutes))
+        opening_bars = [b for b in bars if b["ts"] <= cutoff]
+        if opening_bars:
+            or_high = max(b["high"] for b in opening_bars)
+            or_low = min(b["low"] for b in opening_bars)
 
-    if signal == "SHORT":
-        if md.opening_range_low is not None and md.price < md.opening_range_low:
-            return True, "Break below opening range low", "Opening-range breakdown confirmed"
-        if md.support is not None and md.price < md.support:
-            return True, "Break below support", "Support breakdown confirmed"
-        if strict and md.vwap is not None and md.price < md.vwap and md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
-            return True, "Breakdown below VWAP", "Strict bearish VWAP+breakdown confirmation"
-        if strict and md.trend == "DOWNTREND" and md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
-            return True, "Downtrend breakdown structure", "Strict trend+breakdown confirmation"
-        if strict:
-            return False, "Unavailable", "No bearish price-action confirmation (strict)"
-        if md.vwap is not None and md.price < md.vwap:
-            return True, "Price below VWAP", "Bearish VWAP confirmation"
-        if md.breakout_state in {"BREAKDOWN", "NEAR BREAKDOWN"}:
-            return True, "Bearish breakdown structure", "Breakdown state confirmation"
-        if md.trend == "DOWNTREND" and md.day_change_pct is not None and md.day_change_pct < 0:
-            return True, "Bearish trend continuation", "Negative momentum in downtrend"
-        return False, "Unavailable", "No bearish price-action confirmation"
-
-    return False, "Unavailable", "Signal is not LONG/SHORT"
+    return {
+        "bars": bars,
+        "closes": closes,
+        "highs": highs,
+        "lows": lows,
+        "volumes": volumes,
+        "close": closes[-1] if closes else md.price,
+        "prev_close": closes[-2] if len(closes) >= 2 else None,
+        "last_high": highs[-1] if highs else None,
+        "last_low": lows[-1] if lows else None,
+        "session_vwap": session_vwap if session_vwap is not None else md.vwap,
+        "or_high": or_high,
+        "or_low": or_low,
+        "ema_fast": _ema(closes, 9) if len(closes) >= 6 else None,
+        "ema_slow": _ema(closes, 21) if len(closes) >= 12 else None,
+    }
 
 
 def _risk_reward_ratio_from_analysis(analysis: StockAnalysis) -> float | None:
@@ -221,104 +259,188 @@ def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str, floa
     ratio = _risk_reward_ratio_from_analysis(analysis)
     if ratio is None:
         return False, "Risk/reward unavailable", None
-    if ratio < 1.0:
+    if ratio < 1.5:
         return False, f"Risk/reward below minimum ({ratio:.2f})", ratio
     return True, "Risk/reward accepted", ratio
 
 
 def _build_live_setup_assessment(
     analysis: StockAnalysis,
+    cfg: AppConfig,
     phase: str,
     min_setup_score: int,
-    price_confirmed: bool,
-    trigger: str,
-    confirmation: str,
+    rvol_quality: str,
     rr_ratio: float | None,
 ) -> dict:
     md = analysis.market_data
-    signal = analysis.signal
+    signal = _intended_direction(analysis)
+    ctx = _compute_intraday_context(analysis, cfg)
 
     def comp(value: float | None, maximum: float, status: str) -> dict:
         return {"value": value, "max": maximum, "status": status}
 
     trend_value = 0.0
-    if signal == "LONG" and md.trend == "UPTREND":
-        trend_value = 16.0
+    trend_status = "UNAVAILABLE"
+    if signal in {"LONG", "SHORT"} and ctx["ema_fast"] is not None and ctx["ema_slow"] is not None and ctx["close"] is not None:
+        trend_status = "INTRADAY_EMA"
+        bullish = ctx["ema_fast"] > ctx["ema_slow"] and ctx["close"] > ctx["ema_fast"]
+        bearish = ctx["ema_fast"] < ctx["ema_slow"] and ctx["close"] < ctx["ema_fast"]
+        if signal == "LONG" and bullish:
+            trend_value = 15.0
+        elif signal == "SHORT" and bearish:
+            trend_value = 15.0
+        elif signal == "LONG" and ctx["close"] > ctx["ema_fast"]:
+            trend_value = 8.0
+        elif signal == "SHORT" and ctx["close"] < ctx["ema_fast"]:
+            trend_value = 8.0
+    elif signal == "LONG" and md.trend == "UPTREND":
+        trend_value = 7.0
+        trend_status = "DAILY_CONTEXT"
     elif signal == "SHORT" and md.trend == "DOWNTREND":
-        trend_value = 16.0
+        trend_value = 7.0
+        trend_status = "DAILY_CONTEXT"
     elif md.trend == "RANGE":
-        trend_value = 6.0
+        trend_value = 3.0
+        trend_status = "DAILY_CONTEXT"
 
     momentum_value = 0.0
-    if md.day_change_pct is not None:
+    momentum_status = "UNAVAILABLE"
+    if len(ctx["closes"]) >= 6:
+        momentum_status = "INTRADAY"
+        c = ctx["closes"]
+        ret3 = ((c[-1] - c[-4]) / max(c[-4], 1e-9)) * 100.0
+        ret1 = ((c[-1] - c[-2]) / max(c[-2], 1e-9)) * 100.0
+        prev1 = ((c[-2] - c[-3]) / max(c[-3], 1e-9)) * 100.0
+        accel = ret1 - prev1
         if signal == "LONG":
-            if md.day_change_pct >= 1.2:
-                momentum_value = 12.0
-            elif md.day_change_pct > 0:
+            if ret3 >= 0.8 and accel >= -0.05:
+                momentum_value = 15.0
+            elif ret3 > 0:
                 momentum_value = 8.0
         elif signal == "SHORT":
-            if md.day_change_pct <= -1.2:
-                momentum_value = 12.0
-            elif md.day_change_pct < 0:
+            if ret3 <= -0.8 and accel <= 0.05:
+                momentum_value = 15.0
+            elif ret3 < 0:
                 momentum_value = 8.0
+    elif md.day_change_pct is not None:
+        momentum_status = "DAILY_CONTEXT"
+        if signal == "LONG" and md.day_change_pct > 0:
+            momentum_value = 4.0
+        if signal == "SHORT" and md.day_change_pct < 0:
+            momentum_value = 4.0
+
+    price_confirmed = False
+    trigger = "Unavailable"
+    confirmation = "No actionable trigger"
+    waiting_reason = "waiting for breakout"
+
+    close = ctx["close"]
+    prev_close = ctx["prev_close"]
+    support = md.support
+    resistance = md.resistance
+    or_high = ctx["or_high"]
+    or_low = ctx["or_low"]
+    vwap = ctx["session_vwap"]
+    last_low = ctx["last_low"]
+    last_high = ctx["last_high"]
+
+    if signal == "LONG" and close is not None:
+        if resistance is not None and prev_close is not None and prev_close <= resistance < close:
+            price_confirmed = True
+            trigger = "Breakout above resistance"
+            confirmation = "Resistance breakout confirmed"
+        elif or_high is not None and prev_close is not None and prev_close <= or_high < close:
+            price_confirmed = True
+            trigger = "Opening-range breakout"
+            confirmation = "Opening-range breakout confirmed"
+        elif vwap is not None and prev_close is not None and prev_close <= vwap < close and last_low is not None and last_low >= vwap * 0.998:
+            price_confirmed = True
+            trigger = "VWAP reclaim and hold"
+            confirmation = "VWAP reclaim confirmed"
+        elif ctx["ema_fast"] is not None and ctx["ema_slow"] is not None and ctx["ema_fast"] > ctx["ema_slow"] and last_low is not None and close > ctx["ema_fast"]:
+            if last_low <= ctx["ema_fast"] * 1.002:
+                price_confirmed = True
+                trigger = "Bullish continuation retest"
+                confirmation = "EMA retest continuation confirmed"
+    elif signal == "SHORT" and close is not None:
+        if support is not None and prev_close is not None and prev_close >= support > close:
+            price_confirmed = True
+            trigger = "Breakdown below support"
+            confirmation = "Support breakdown confirmed"
+        elif or_low is not None and prev_close is not None and prev_close >= or_low > close:
+            price_confirmed = True
+            trigger = "Opening-range breakdown"
+            confirmation = "Opening-range breakdown confirmed"
+        elif vwap is not None and prev_close is not None and prev_close >= vwap > close and last_high is not None and last_high <= vwap * 1.002:
+            price_confirmed = True
+            trigger = "VWAP rejection and hold"
+            confirmation = "VWAP rejection confirmed"
+        elif ctx["ema_fast"] is not None and ctx["ema_slow"] is not None and ctx["ema_fast"] < ctx["ema_slow"] and last_high is not None and close < ctx["ema_fast"]:
+            if last_high >= ctx["ema_fast"] * 0.998:
+                price_confirmed = True
+                trigger = "Bearish continuation retest"
+                confirmation = "EMA retest continuation confirmed"
 
     price_action_value = 0.0
     if price_confirmed:
-        price_action_value = 22.0
-    elif signal == "LONG" and md.breakout_state in {"NEAR BREAKOUT", "BREAKOUT"}:
+        price_action_value = 20.0
+        waiting_reason = "trigger confirmed"
+    elif signal == "LONG" and (md.breakout_state in {"NEAR BREAKOUT", "BREAKOUT"} or (resistance is not None and close is not None and close >= resistance * 0.997)):
         price_action_value = 10.0
-    elif signal == "SHORT" and md.breakout_state in {"NEAR BREAKDOWN", "BREAKDOWN"}:
+        waiting_reason = "waiting for breakout"
+    elif signal == "SHORT" and (md.breakout_state in {"NEAR BREAKDOWN", "BREAKDOWN"} or (support is not None and close is not None and close <= support * 1.003)):
         price_action_value = 10.0
+        waiting_reason = "waiting for breakdown"
 
     vwap_value: float | None = None
     vwap_status = "UNAVAILABLE"
-    if md.vwap is not None and md.price is not None:
+    if vwap is not None and close is not None:
         vwap_status = "AVAILABLE"
-        if signal == "LONG" and md.price > md.vwap:
+        if signal == "LONG" and close > vwap:
             vwap_value = 10.0
-        elif signal == "SHORT" and md.price < md.vwap:
+        elif signal == "SHORT" and close < vwap:
             vwap_value = 10.0
         else:
             vwap_value = 0.0
 
     opening_range_value: float | None = None
     opening_range_status = "UNAVAILABLE"
-    if md.opening_range_high is not None and md.opening_range_low is not None and md.price is not None:
+    if or_high is not None and or_low is not None and close is not None:
         opening_range_status = "AVAILABLE"
-        if signal == "LONG" and md.price > md.opening_range_high:
-            opening_range_value = 10.0
-        elif signal == "SHORT" and md.price < md.opening_range_low:
-            opening_range_value = 10.0
-        elif signal == "LONG" and md.price >= md.opening_range_high * 0.998:
-            opening_range_value = 5.0
-        elif signal == "SHORT" and md.price <= md.opening_range_low * 1.002:
-            opening_range_value = 5.0
+        if signal == "LONG" and close > or_high:
+            opening_range_value = 15.0
+        elif signal == "SHORT" and close < or_low:
+            opening_range_value = 15.0
+        elif signal == "LONG" and close >= or_high * 0.998:
+            opening_range_value = 8.0
+        elif signal == "SHORT" and close <= or_low * 1.002:
+            opening_range_value = 8.0
         else:
             opening_range_value = 0.0
 
-    alignment_value = 10.0 if analysis.market_alignment == "MARKET_ALIGNED" else (6.0 if analysis.market_alignment == "UNKNOWN" else 0.0)
+    alignment_value = 5.0 if analysis.market_alignment == "MARKET_ALIGNED" else (2.0 if analysis.market_alignment == "UNKNOWN" else 0.0)
 
     risk_reward_value: float | None = None
     risk_reward_status = "UNAVAILABLE"
     if rr_ratio is not None:
         risk_reward_status = "AVAILABLE"
-        if rr_ratio >= 1.8:
-            risk_reward_value = 20.0
-        elif rr_ratio >= 1.3:
-            risk_reward_value = 14.0
-        elif rr_ratio >= 1.0:
+        if rr_ratio >= 2.0:
             risk_reward_value = 10.0
+        elif rr_ratio >= 1.5:
+            risk_reward_value = 8.0
+        elif rr_ratio >= 1.2:
+            risk_reward_value = 4.0
         else:
             risk_reward_value = 0.0
 
     components = {
-        "trend": comp(trend_value, 16.0, md.trend),
-        "momentum": comp(momentum_value, 12.0, "AVAILABLE" if md.day_change_pct is not None else "UNAVAILABLE"),
-        "price_action": comp(price_action_value, 22.0, trigger if price_confirmed else "SETUP_DEVELOPING"),
+        "trend": comp(trend_value, 15.0, trend_status),
+        "momentum": comp(momentum_value, 15.0, momentum_status),
+        "price_action": comp(price_action_value, 20.0, trigger if price_confirmed else waiting_reason),
         "vwap": comp(vwap_value, 10.0, vwap_status),
-        "opening_range": comp(opening_range_value, 10.0, opening_range_status),
-        "market_alignment": comp(alignment_value, 10.0, analysis.market_alignment),
-        "risk_reward": comp(risk_reward_value, 20.0, risk_reward_status),
+        "opening_range": comp(opening_range_value, 15.0, opening_range_status),
+        "market_alignment": comp(alignment_value, 5.0, analysis.market_alignment),
+        "risk_reward": comp(risk_reward_value, 10.0, risk_reward_status),
     }
 
     available_values = [x["value"] for x in components.values() if x["value"] is not None]
@@ -329,7 +451,7 @@ def _build_live_setup_assessment(
         raw_score = 0.0
 
     missing_intraday = int(components["vwap"]["value"] is None) + int(components["opening_range"]["value"] is None)
-    final_score = max(0, min(100, int(round(raw_score - (missing_intraday * 4)))))
+    final_score = max(0, min(100, int(round(raw_score - (missing_intraday * 3)))))
 
     if final_score >= min_setup_score and price_confirmed:
         setup_state = "ENTRY_TRIGGERED"
@@ -337,6 +459,10 @@ def _build_live_setup_assessment(
         setup_state = "SETUP_DEVELOPING"
     else:
         setup_state = "NO_TRADE"
+
+    state_reason = "entry trigger confirmed" if setup_state == "ENTRY_TRIGGERED" else waiting_reason
+    if setup_state == "NO_TRADE":
+        state_reason = "insufficient intraday confirmation"
 
     return {
         "phase": phase,
@@ -346,6 +472,12 @@ def _build_live_setup_assessment(
         "trigger": trigger,
         "confirmation": confirmation,
         "missing_intraday_factors": missing_intraday,
+        "price_confirmed": price_confirmed,
+        "state_reason": state_reason,
+        "vwap_status": vwap_status,
+        "opening_range_status": opening_range_status,
+        "close": close,
+        "rvol_quality": rvol_quality,
     }
 
 
@@ -367,8 +499,19 @@ def _log_setup_components(symbol: str, assessment: dict) -> None:
 
 
 def _setup_status_summary(analysis: StockAnalysis, assessment: dict) -> str:
+    direction = _intended_direction(analysis)
+    if assessment["setup_state"] == "SETUP_DEVELOPING":
+        return (
+            f"{analysis.symbol}: {direction} | SetupState SETUP_DEVELOPING | "
+            f"SetupScore {assessment['final_setup_score']} | {assessment.get('state_reason', 'waiting')}"
+        )
+    if assessment["setup_state"] == "NO_TRADE":
+        return (
+            f"{analysis.symbol}: {direction} | SetupState NO_TRADE | "
+            f"reason={assessment.get('state_reason', 'insufficient evidence')}"
+        )
     return (
-        f"{analysis.symbol}: {analysis.direction_bias} | SetupState {assessment['setup_state']} | "
+        f"{analysis.symbol}: {direction} | SetupState ENTRY_TRIGGERED | "
         f"SetupScore {assessment['final_setup_score']}"
     )
 
@@ -377,6 +520,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
     rvol_quality, rvol_quality_reason = _classify_rvol_quality(analysis, cfg, now_utc)
+    rvol_value = md.intraday_rvol if md.intraday_rvol is not None else md.relative_volume
 
     thresholds = {
         "min_rvol": cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol,
@@ -384,7 +528,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         "phase": phase,
         "rvol_quality": rvol_quality,
         "rvol_quality_reason": rvol_quality_reason,
-        "rvol": md.relative_volume,
+        "rvol": rvol_value,
     }
 
     if md.price is None:
@@ -397,17 +541,13 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         thresholds["setup_state"] = "NO_TRADE"
         return False, "SHORT signal requires SHORT_BIAS", thresholds
 
-    strict_confirmation = rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}
-    price_confirmed, trigger, confirmation = _price_action_confirmation(analysis, phase, strict=strict_confirmation)
-
     rr_ok, rr_reason, rr_ratio = _is_risk_reward_acceptable(analysis)
     setup_assessment = _build_live_setup_assessment(
         analysis,
+        cfg,
         phase,
         thresholds["min_setup"],
-        price_confirmed=price_confirmed,
-        trigger=trigger,
-        confirmation=confirmation,
+        rvol_quality=rvol_quality,
         rr_ratio=rr_ratio,
     )
     thresholds.update(
@@ -417,6 +557,9 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
             "setup_state": setup_assessment["setup_state"],
             "trigger": setup_assessment["trigger"],
             "confirmation": setup_assessment["confirmation"],
+            "state_reason": setup_assessment.get("state_reason"),
+            "vwap_status": setup_assessment.get("vwap_status"),
+            "opening_range_status": setup_assessment.get("opening_range_status"),
         }
     )
 
@@ -424,7 +567,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         return False, f"Setup score below {phase} threshold", thresholds
 
     if rvol_quality == "RELIABLE":
-        if md.relative_volume is None or md.relative_volume < thresholds["min_rvol"]:
+        if rvol_value is None or rvol_value < thresholds["min_rvol"]:
             return False, f"Relative volume below {phase} threshold", thresholds
         thresholds["rvol_gate"] = "PASSED"
     else:
@@ -443,12 +586,13 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     if not rr_ok:
         return False, rr_reason, thresholds
 
-    if not price_confirmed:
-        return False, confirmation, thresholds
+    if not setup_assessment.get("price_confirmed"):
+        return False, setup_assessment.get("confirmation", "No actionable trigger"), thresholds
 
-    thresholds["confirmation_mode"] = "STRICT" if strict_confirmation else "STANDARD"
+    thresholds["confirmation_mode"] = "STRICT" if rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"} else "STANDARD"
 
-    if opening_range_window and analysis.market_data.breakout_state not in {"BREAKOUT", "BREAKDOWN"}:
+    if opening_range_window and setup_assessment.get("trigger") == "Opening-range breakout":
+        thresholds["state_reason"] = "opening range still developing"
         return False, "OPENING RANGE DEVELOPING", thresholds
 
     thresholds["setup_state"] = "ENTRY_TRIGGERED"
@@ -465,12 +609,13 @@ def _determine_event(
 ) -> dict | None:
     symbol_state = state.setdefault("symbols", {}).setdefault(analysis.symbol, {})
     prev_signal = symbol_state.get("last_signal", "WAIT")
+    symbol_state.setdefault("position_state", "WATCHING")
 
     phase = _v4_session_phase(now, cfg)
     min_rvol = cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol
     rvol_quality, _ = _classify_rvol_quality(analysis, cfg, now)
-    rvol_value = analysis.market_data.relative_volume
-    rvol_text = f"{rvol_value:.2f}" if isinstance(rvol_value, (int, float)) else "Unavailable"
+    rvol_value = analysis.market_data.intraday_rvol if analysis.market_data.intraday_rvol is not None else analysis.market_data.relative_volume
+    rvol_text = f"{rvol_value:.2f}" if isinstance(rvol_value, (int, float)) else "DATA_LIMITED"
     if rvol_quality == "RELIABLE":
         volume_note = "passed volume gate" if isinstance(rvol_value, (int, float)) and rvol_value >= min_rvol else "below volume gate"
     else:
@@ -514,9 +659,19 @@ def _determine_event(
     v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
     if event_type is None:
         is_confirmable, live_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
+        symbol_state["last_setup_state"] = v4.get("setup_state", "NO_TRADE")
         if "setup_components" in v4:
             _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
-            print(_setup_status_summary(analysis, {"setup_state": v4.get("setup_state", "NO_TRADE"), "final_setup_score": v4.get("setup_score", 0)}))
+            print(
+                _setup_status_summary(
+                    analysis,
+                    {
+                        "setup_state": v4.get("setup_state", "NO_TRADE"),
+                        "final_setup_score": v4.get("setup_score", 0),
+                        "state_reason": v4.get("state_reason"),
+                    },
+                )
+            )
         if not is_confirmable:
             print(
                 f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
@@ -528,8 +683,12 @@ def _determine_event(
             return None
 
         if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
+            if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == "LONG":
+                return None
             event_type = "WAIT_TO_LONG"
         elif prev_signal in {"WAIT", "NO_TRADE"} and signal == "SHORT":
+            if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == "SHORT":
+                return None
             event_type = "WAIT_TO_SHORT"
         elif prev_signal == "LONG" and signal not in {"LONG", "WAIT"}:
             event_type = "LONG_EXIT"
@@ -538,6 +697,18 @@ def _determine_event(
 
     if event_type is None:
         return None
+
+    if event_type in {"WAIT_TO_LONG", "WAIT_TO_SHORT"}:
+        required = {
+            "entry": analysis.battle_plan.entry_trigger_price,
+            "stop": analysis.battle_plan.invalidation_price,
+            "target_1": target_1,
+            "price": price,
+            "risk_reward": _risk_reward_ratio_from_analysis(analysis),
+        }
+        if any(v is None for v in required.values()):
+            print(f"{analysis.symbol}: ENTRY_TRIGGERED suppressed due to missing required trade levels.")
+            return None
 
     last_alert_type = symbol_state.get("last_alert_type")
     last_alert_ts = _parse_ts(symbol_state.get("last_alert_timestamp"))
@@ -573,14 +744,15 @@ def _determine_event(
         "timestamp": now.isoformat(),
         "timestamp_market": analysis.market_data.intraday_timestamp or analysis.market_data.data_timestamp,
         "level_unavailable_reason": analysis.battle_plan.level_unavailable_reason,
-        "rvol": analysis.market_data.relative_volume,
+        "rvol": rvol_value,
         "rvol_quality": v4.get("rvol_quality", rvol_quality),
         "phase": v4["phase"],
         "v4_trigger": v4.get("trigger"),
         "v4_confirmation": v4.get("confirmation"),
-        "vwap_status": "AVAILABLE" if analysis.market_data.vwap is not None else "UNAVAILABLE",
+        "vwap_status": v4.get("vwap_status") or ("AVAILABLE" if analysis.market_data.vwap is not None else "UNAVAILABLE"),
         "opening_range_status": (
-            "AVAILABLE" if analysis.market_data.opening_range_high is not None and analysis.market_data.opening_range_low is not None else "UNAVAILABLE"
+            v4.get("opening_range_status")
+            or ("AVAILABLE" if analysis.market_data.opening_range_high is not None and analysis.market_data.opening_range_low is not None else "UNAVAILABLE")
         ),
         "risk_reward_ratio": _risk_reward_ratio_from_analysis(analysis),
     }
@@ -629,12 +801,25 @@ def _send_telegram_alerts(alerts: list[dict], cfg: AppConfig) -> int:
 def _update_symbol_state(state: dict, analysis: StockAnalysis, event: dict | None, now: datetime) -> None:
     symbol_state = state.setdefault("symbols", {}).setdefault(analysis.symbol, {})
     symbol_state["last_signal"] = analysis.signal
+    symbol_state.setdefault("position_state", "WATCHING")
 
     if event is None:
+        if symbol_state.get("position_state") == "EXITED" and analysis.signal in {"WAIT", "NO_TRADE"}:
+            symbol_state["position_state"] = "WATCHING"
         return
 
     symbol_state["last_alert_type"] = event["event_type"]
     symbol_state["last_alert_timestamp"] = now.isoformat()
+
+    if event["event_type"] == "WAIT_TO_LONG":
+        symbol_state["position_state"] = "IN_POSITION"
+        symbol_state["active_direction"] = "LONG"
+    elif event["event_type"] == "WAIT_TO_SHORT":
+        symbol_state["position_state"] = "IN_POSITION"
+        symbol_state["active_direction"] = "SHORT"
+    elif event["event_type"] in {"LONG_EXIT", "SHORT_EXIT", "LONG_INVALIDATED", "SHORT_INVALIDATED"}:
+        symbol_state["position_state"] = "EXITED"
+        symbol_state["active_direction"] = None
 
     alerted_targets = set(symbol_state.get("alerted_targets", []))
     if "TARGET" in event["event_type"]:
@@ -700,7 +885,7 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
     rvol_quality = alert.get("rvol_quality")
     if isinstance(alert.get("rvol"), (int, float)):
         if rvol_quality:
-            rvol_line = f"RVOL: {alert.get('rvol'):.2f} ({rvol_quality})"
+            rvol_line = f"RVOL: {alert.get('rvol'):.2f} {rvol_quality}"
         else:
             rvol_line = f"RVOL: {alert.get('rvol'):.2f}"
     elif rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}:
@@ -708,35 +893,28 @@ def _render_telegram_message(alert: dict, market_tz: str) -> str:
     else:
         rvol_line = "RVOL: Unavailable"
 
-    header = "🚨 V4 LONG ALERT" if signal == "LONG" else "🚨 V4 SHORT ALERT"
+    header = "🟢 " + symbol + " LONG - ENTRY TRIGGERED" if signal == "LONG" else "🔴 " + symbol + " SHORT - ENTRY TRIGGERED"
     rr_ratio = alert.get("risk_reward_ratio")
     rr_line = f"Risk/Reward: {rr_ratio:.2f}" if isinstance(rr_ratio, (int, float)) else "Risk/Reward: UNAVAILABLE"
+    vwap_relation = "Above" if signal == "LONG" else "Below"
+    if alert.get("vwap_status") != "AVAILABLE":
+        vwap_relation = "UNAVAILABLE"
     return (
         f"<b>{header}</b>\n\n"
-        f"Signal: <b>{'LONG' if signal == 'LONG' else 'SHORT'}</b>\n"
-        f"Symbol: <b>{symbol}</b>\n"
         f"Phase: {phase}\n"
-        f"Bias: {'LONG' if signal == 'LONG' else 'SHORT'}\n"
-        f"Setup State: {alert.get('setup_state', 'ENTRY_TRIGGERED')}\n\n"
+        f"Price: {_fmt_price(alert.get('price'))}\n"
         f"Setup Score: {alert['setup_score']}/100\n"
-        f"Price: {_fmt_price(alert.get('price'))}\n\n"
-        "Entry Price\n"
-        f"{_fmt_price(alert.get('entry_trigger'))}\n\n"
-        "Trigger\n"
-        f"{alert.get('v4_trigger') or ('Break above ' + _fmt_price(alert.get('entry_trigger')) if signal == 'LONG' else 'Break below ' + _fmt_price(alert.get('entry_trigger')))}\n\n"
-        "Confirmation\n"
-        f"{alert.get('v4_confirmation') or confirmation_line}\n\n"
-        "Invalidation\n"
-        f"{_fmt_price(alert.get('invalidation'))}\n\n"
-        "Target 1\n"
-        f"{_fmt_price(alert.get('target_1'))}\n\n"
-        "Target 2\n"
-        f"{_fmt_price(alert.get('target_2'))}\n\n"
+        f"{rvol_line}\n"
+        f"VWAP: {vwap_relation}\n"
+        f"Trigger: {alert.get('v4_trigger') or confirmation_line}\n"
         f"{rr_line}\n"
-        f"VWAP: {alert.get('vwap_status', 'UNAVAILABLE')}\n"
         f"Opening Range: {alert.get('opening_range_status', 'UNAVAILABLE')}\n"
         f"Market: {alert.get('market_regime', 'Unavailable')}\n"
-        f"{rvol_line}"
+        "\n"
+        f"Entry: {_fmt_price(alert.get('entry_trigger'))}\n"
+        f"Stop: {_fmt_price(alert.get('invalidation'))}\n"
+        f"Target 1: {_fmt_price(alert.get('target_1'))}\n"
+        f"Target 2: {_fmt_price(alert.get('target_2'))}"
     ) + f"\n\nTime: {time_label}"
 
 

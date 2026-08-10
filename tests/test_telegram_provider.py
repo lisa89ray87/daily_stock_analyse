@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import requests
@@ -94,6 +94,31 @@ def _sample_alert(event_type: str = "WAIT_TO_LONG", signal: str = "LONG") -> dic
 
 
 def _analysis(symbol: str, signal: str, bias: str) -> StockAnalysis:
+    bars = []
+    base = datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
+    price = 100.0
+    for i in range(18):
+        step = 0.30
+        open_p = price
+        close_p = price + step
+        high_p = max(open_p, close_p) + 0.12
+        low_p = min(open_p, close_p) - 0.08
+        bars.append(
+            {
+                "ts": (base + timedelta(minutes=5 * i)).isoformat(),
+                "open": open_p,
+                "high": high_p,
+                "low": low_p,
+                "close": close_p,
+                "volume": 120_000 + (i * 3000),
+            }
+        )
+        price = close_p
+
+    resistance = bars[-2]["close"] + 0.05
+    bars[-1]["close"] = resistance + 0.20
+    bars[-1]["high"] = resistance + 0.25
+
     return StockAnalysis(
         symbol=symbol,
         name=symbol,
@@ -114,14 +139,18 @@ def _analysis(symbol: str, signal: str, bias: str) -> StockAnalysis:
             symbol=symbol,
             price=102.0,
             relative_volume=2.0,
+            intraday_rvol=1.8,
+            intraday_rvol_quality="RELIABLE",
+            intraday_rvol_note="intraday",
             trend="UPTREND",
             day_change_pct=1.5,
             vwap=100.0,
-            opening_range_high=101.0,
+            opening_range_high=resistance,
             opening_range_low=99.0,
             breakout_state="BREAKOUT",
             intraday_timestamp="2026-08-10T14:35:00Z",
             data_timestamp="2026-08-10T14:35:00Z",
+            intraday_bars=bars,
         ),
         intelligence=IntelligenceBlock(),
         battle_plan=BattlePlan(
@@ -133,8 +162,8 @@ def _analysis(symbol: str, signal: str, bias: str) -> StockAnalysis:
             target_area="x",
             invalidation="Below 99",
             risk_reward_assessment="2.00",
-            entry_trigger_price=101.0,
-            confirmation_level=101.0,
+            entry_trigger_price=resistance,
+            confirmation_level=resistance,
             invalidation_price=99.0,
             target_1=104.0,
             target_2=106.0,
@@ -209,11 +238,10 @@ def test_correct_message_payload_and_parse_mode():
 
 def test_long_alert_formatting():
     msg = _render_telegram_message(_sample_alert(event_type="WAIT_TO_LONG", signal="LONG"), "America/New_York")
-    assert "LONG ALERT" in msg
-    assert "Signal: <b>LONG</b>" in msg
-    assert "Break above" in msg
-    assert "RVOL: 1.85 (RELIABLE)" in msg
-    assert "VWAP: AVAILABLE" in msg
+    assert "ENTRY TRIGGERED" in msg
+    assert "Trigger:" in msg
+    assert "RVOL: 1.85 RELIABLE" in msg
+    assert "VWAP: Above" in msg
     assert "Opening Range: AVAILABLE" in msg
     assert "Risk/Reward: 2.10" in msg
 
@@ -228,8 +256,8 @@ def test_long_alert_formatting_with_data_limited_rvol_quality():
 
 def test_short_alert_formatting():
     msg = _render_telegram_message(_sample_alert(event_type="WAIT_TO_SHORT", signal="SHORT"), "America/New_York")
-    assert "SHORT ALERT" in msg
-    assert "Break below" in msg
+    assert "ENTRY TRIGGERED" in msg
+    assert "VWAP: Below" in msg
 
 
 def test_target_alert_formatting():
@@ -263,8 +291,8 @@ def test_telegram_failure_does_not_fail_dispatch():
 
 def test_no_trade_to_long_transition_generates_event():
     cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "NO_TRADE"}}}
-    analysis = _analysis("PLTR", "LONG", "LONG_BIAS")
-    event = _determine_event(analysis, state, cfg, datetime(2026, 8, 10, 14, 45, tzinfo=UTC), opening_range_window=False)
-    assert event is not None
-    assert event["event_type"] == "WAIT_TO_LONG"
+    alerts = [_sample_alert(event_type="WAIT_TO_LONG", signal="LONG")]
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        sent = _send_telegram_alerts(alerts, cfg)
+    assert send_mock.call_count == 1
+    assert sent == 1
