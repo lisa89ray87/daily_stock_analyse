@@ -45,6 +45,13 @@ class MarketSessionStatus:
     market_close_time: datetime | None
 
 
+def _safe_tz_name(raw: str | None, default: str) -> str:
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value if value else default
+
+
 def _parse_hhmm(raw: str) -> time:
     parts = raw.strip().split(":")
     if len(parts) != 2:
@@ -70,7 +77,7 @@ def get_market_session_status(
     market_open_hhmm: str,
     market_close_hhmm: str,
 ) -> MarketSessionStatus:
-    tz = ZoneInfo(market_timezone)
+    tz = ZoneInfo(_safe_tz_name(market_timezone, "America/New_York"))
     now_market = now_utc.astimezone(tz)
 
     if now_market.weekday() >= 5:
@@ -127,7 +134,7 @@ def next_us_market_open_malaysia(
     market_open_hhmm: str,
     malaysia_timezone: str,
 ) -> datetime:
-    market_tz = ZoneInfo(market_timezone)
+    market_tz = ZoneInfo(_safe_tz_name(market_timezone, "America/New_York"))
     my_tz = ZoneInfo(malaysia_timezone)
     open_t = _parse_hhmm(market_open_hhmm)
 

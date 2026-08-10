@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
+from src.daily_stock_analyse.config import load_config
 from src.daily_stock_analyse.market_hours import (
     get_market_session_status,
     next_us_market_open_malaysia,
@@ -50,3 +52,27 @@ def test_holiday_detection_when_calendar_available():
     status = get_market_session_status(now_utc, "America/New_York", "09:30", "16:00")
     assert status.market_open is False
     assert "holiday" in status.reason.lower()
+
+
+def test_next_open_no_crash_when_live_market_timezone_missing(monkeypatch):
+    monkeypatch.delenv("LIVE_MARKET_TIMEZONE", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    out = next_us_market_open_malaysia(
+        datetime(2026, 8, 10, 0, 0, tzinfo=UTC),
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm="09:30",
+        malaysia_timezone="Asia/Kuala_Lumpur",
+    )
+    assert out.tzinfo is not None
+
+
+def test_next_open_no_crash_when_live_market_timezone_empty(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_TIMEZONE", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    out = next_us_market_open_malaysia(
+        datetime(2026, 8, 10, 0, 0, tzinfo=UTC),
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm="09:30",
+        malaysia_timezone="Asia/Kuala_Lumpur",
+    )
+    assert out.tzinfo is not None

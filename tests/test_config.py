@@ -84,3 +84,24 @@ def test_morning_timezone_empty_falls_back_to_kuala_lumpur(monkeypatch):
     cfg = load_config(Path(__file__).resolve().parents[1])
     assert cfg.morning_report_timezone == "Asia/Kuala_Lumpur"
     ZoneInfo(cfg.morning_report_timezone)
+
+
+def test_live_market_timezone_missing_uses_new_york(monkeypatch):
+    monkeypatch.delenv("LIVE_MARKET_TIMEZONE", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_timezone == "America/New_York"
+    ZoneInfo(cfg.live_market_timezone)
+
+
+def test_live_market_timezone_empty_uses_new_york(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_TIMEZONE", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_timezone == "America/New_York"
+    ZoneInfo(cfg.live_market_timezone)
+
+
+def test_live_market_timezone_explicit_new_york(monkeypatch):
+    monkeypatch.setenv("LIVE_MARKET_TIMEZONE", "America/New_York")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_market_timezone == "America/New_York"
+    ZoneInfo(cfg.live_market_timezone)
