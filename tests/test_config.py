@@ -1,4 +1,5 @@
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from src.daily_stock_analyse.config import load_config
 
@@ -62,3 +63,24 @@ def test_threshold_overrides(monkeypatch):
     assert cfg.telegram_enabled is True
     assert cfg.telegram_bot_token == "token-x"
     assert cfg.telegram_chat_id == "chat-1"
+
+
+def test_morning_timezone_missing_uses_kuala_lumpur(monkeypatch):
+    monkeypatch.delenv("MORNING_REPORT_TIMEZONE", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.morning_report_timezone == "Asia/Kuala_Lumpur"
+    ZoneInfo(cfg.morning_report_timezone)
+
+
+def test_morning_timezone_explicit_kuala_lumpur(monkeypatch):
+    monkeypatch.setenv("MORNING_REPORT_TIMEZONE", "Asia/Kuala_Lumpur")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.morning_report_timezone == "Asia/Kuala_Lumpur"
+    ZoneInfo(cfg.morning_report_timezone)
+
+
+def test_morning_timezone_empty_falls_back_to_kuala_lumpur(monkeypatch):
+    monkeypatch.setenv("MORNING_REPORT_TIMEZONE", "")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.morning_report_timezone == "Asia/Kuala_Lumpur"
+    ZoneInfo(cfg.morning_report_timezone)

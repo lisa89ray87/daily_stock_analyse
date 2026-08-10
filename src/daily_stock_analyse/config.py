@@ -106,6 +106,14 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_nonempty_str(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value if value else default
+
+
 def _normalize_fraction_threshold(value: float) -> float:
     # Accept both decimal form (0.7) and percentage-like form (70).
     if value > 1.0:
@@ -173,8 +181,8 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         day_trade_gap_threshold=_env_float("DAY_TRADE_GAP_THRESHOLD", 3.0),
         day_trade_rvol_threshold=_env_float("DAY_TRADE_RVOL_THRESHOLD", 1.5),
         day_trade_min_setup_score=_env_int("DAY_TRADE_MIN_SETUP_SCORE", 65),
-        morning_report_time=os.getenv("MORNING_REPORT_TIME", "08:00"),
-        morning_report_timezone=os.getenv("MORNING_REPORT_TIMEZONE", "Asia/Kuala_Lumpur"),
+        morning_report_time=_env_nonempty_str("MORNING_REPORT_TIME", "08:00"),
+        morning_report_timezone=_env_nonempty_str("MORNING_REPORT_TIMEZONE", "Asia/Kuala_Lumpur"),
         live_alert_enabled=_env_flag("LIVE_ALERT_ENABLED", True),
         live_alert_interval_minutes=_env_int("LIVE_ALERT_INTERVAL_MINUTES", 5),
         live_market_timezone=os.getenv("LIVE_MARKET_TIMEZONE", "America/New_York"),
