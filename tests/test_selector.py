@@ -58,3 +58,17 @@ def test_select_dynamic_excludes_fixed_and_keeps_top3():
     assert "NVDA" not in symbols
     assert len(symbols) == 3
     assert "AAPL" in symbols
+
+
+def test_dynamic_selection_does_not_duplicate_skhy_if_fixed():
+    fixed = ["SKHY", "AMD"]
+    data = [
+        _analysis("SKHY", 0.9, 0.1, candidate=True),
+        _analysis("AMD", 0.8, 0.2),
+        _analysis("AAPL", 0.7, 0.1, candidate=True),
+        _analysis("TSLA", 0.6, 0.2),
+        _analysis("QCOM", 0.55, 0.2),
+    ]
+    out = select_dynamic_opportunities(data, fixed, top_n=3, min_setup_score=45, min_relative_volume=1.0)
+    symbols = [x.symbol for x in out]
+    assert "SKHY" not in symbols

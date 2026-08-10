@@ -7,6 +7,8 @@ def test_config_loads_defaults(monkeypatch):
     monkeypatch.delenv("EMAIL_TO", raising=False)
     cfg = load_config(Path(__file__).resolve().parents[1])
     assert "NOK" in cfg.fixed_watchlist
+    assert "SKHY" in cfg.fixed_watchlist
+    assert "000660.KS" not in cfg.fixed_watchlist
     assert cfg.email_to == "raymond87tan@gmail.com"
 
 

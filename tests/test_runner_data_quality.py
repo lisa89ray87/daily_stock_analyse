@@ -25,7 +25,7 @@ def _cfg() -> AppConfig:
         send_email=False,
         data_provider="yfinance",
         news_provider="yfinance",
-        fixed_watchlist=["000660.KS"],
+        fixed_watchlist=["SKHY"],
         candidate_universe=["AMD"],
         score_weights={
             "trend": 0.2,
@@ -58,6 +58,13 @@ def test_data_quality_flags_and_warnings_present():
 
 
 def test_sk_hynix_labeling():
-    md = MarketData(symbol="000660.KS", price=1420000, regular_price=1420000, previous_close=1415000, overnight_reference_price=1415000, volume=1, relative_volume=1, provider="yfinance", data_timestamp="2026-08-10T00:00:00Z")
-    result = _analyze_symbol("000660.KS", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
-    assert result.name == "SK Hynix (KRX)"
+    md = MarketData(symbol="SKHY", price=42.5, regular_price=42.5, previous_close=42.0, overnight_reference_price=42.0, volume=1, relative_volume=1, provider="yfinance", data_timestamp="2026-08-10T00:00:00Z")
+    result = _analyze_symbol("SKHY", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
+    assert result.name == "SK hynix"
+
+
+def test_no_silent_fallback_from_skhy_to_krx_ticker():
+    md = MarketData(symbol="SKHY", price=None, provider="yfinance", data_timestamp="2026-08-10T00:00:00Z")
+    result = _analyze_symbol("SKHY", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
+    assert result.symbol == "SKHY"
+    assert result.name == "SK hynix"

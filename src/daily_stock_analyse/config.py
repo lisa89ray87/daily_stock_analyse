@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_FIXED_WATCHLIST = ["NOK", "AMD", "NVDA", "INTC", "SNDK", "000660.KS"]
+DEFAULT_FIXED_WATCHLIST = ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY"]
 DEFAULT_CANDIDATE_UNIVERSE = [
     "AAPL",
     "MSFT",

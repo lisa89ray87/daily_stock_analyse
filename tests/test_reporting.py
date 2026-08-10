@@ -52,11 +52,11 @@ def _sample_stock(symbol: str, name: str) -> StockAnalysis:
 
 def _sample_report() -> DailyAnalysisReport:
     amd = _sample_stock("AMD", "AMD")
-    hynix = _sample_stock("000660.KS", "SK Hynix (KRX)")
+    hynix = _sample_stock("SKHY", "SK hynix")
     return DailyAnalysisReport(
         generated_at_utc=datetime.now(UTC),
         session_label="Session",
-        fixed_symbols=["AMD", "000660.KS"],
+        fixed_symbols=["AMD", "SKHY"],
         dynamic_symbols=["AAPL"],
         market_regime=MarketRegime(
             label="MIXED",
@@ -87,4 +87,4 @@ def test_html_render_contains_header_and_mobile_table_wrapper():
 def test_html_contains_sk_hynix_labeling():
     report = _sample_report()
     html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
-    assert "SK Hynix (KRX)" in html
+    assert "SK hynix" in html

@@ -187,8 +187,8 @@ def _analyze_symbol(
 
 
 def _display_name(symbol: str) -> str:
-    if symbol.upper() == "000660.KS":
-        return "SK Hynix (KRX)"
+    if symbol.upper() == "SKHY":
+        return "SK hynix"
     if symbol.upper() == "SNDK":
         return "SanDisk"
     return symbol

@@ -33,7 +33,7 @@ Always analyzed:
 3. NVDA
 4. INTC
 5. SNDK
-6. 000660.KS
+6. SKHY
 
 Configured in `config/watchlist.json`.
 
