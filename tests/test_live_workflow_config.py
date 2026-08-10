@@ -20,3 +20,18 @@ def test_live_workflow_uses_safe_alert_threshold_defaults():
     assert 'ALERT_MIN_SETUP_SCORE: "70"' in wf
     assert 'ALERT_MIN_RVOL: "1.5"' in wf
     assert 'ALERT_COOLDOWN_MINUTES: "15"' in wf
+
+
+def test_live_workflow_uses_session_start_schedule_not_every_5_minutes():
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "live_stock_alerts.yml").read_text(encoding="utf-8")
+
+    assert 'cron: "*/5 * * * 1-5"' not in wf
+    assert 'cron: "25 13 * * 1-5"' in wf
+    assert 'cron: "30 19 * * 1-5"' in wf
+
+
+def test_live_workflow_has_non_cancelling_concurrency_guard():
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "live_stock_alerts.yml").read_text(encoding="utf-8")
+
+    assert 'group: live-stock-alerts-${{ github.ref_name }}' in wf
+    assert 'cancel-in-progress: false' in wf

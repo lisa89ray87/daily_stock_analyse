@@ -12,13 +12,19 @@ on:
           - "false"
           - "true"
   schedule:
-    - cron: "*/5 * * * 1-5"
+    # Start near U.S. market open in UTC. In EST this is pre-open and the Python service waits.
+    - cron: "25 13 * * 1-5"
+    # GitHub-hosted jobs have runtime limits; this second trigger restarts the service for late session.
+    - cron: "30 19 * * 1-5"
 
 env:
   SEND_EMAIL: "0"
 
 jobs:
   live-alerts:
+    concurrency:
+      group: live-stock-alerts-${{ github.ref_name }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time as time_module
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -8,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .config import AppConfig, load_config
 from .market import build_market_regime
-from .market_hours import get_market_session_status, utc_now
+from .market_hours import MarketSessionStatus, get_market_session_status, utc_now
 from .models import StockAnalysis
 from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
 from .runner import _analyze_symbol
@@ -96,19 +97,92 @@ def run_live_alerts(base_path: Path | None = None) -> int:
         print("LIVE_ALERT_ENABLED=0, exiting without alerts.")
         return 0
 
-    now = utc_now()
-    session = get_market_session_status(
-        now,
-        market_timezone=cfg.live_market_timezone,
-        market_open_hhmm=cfg.live_market_open,
-        market_close_hhmm=cfg.live_market_close,
-    )
+    interval_minutes = max(1, int(cfg.live_alert_interval_minutes or 5))
+    print("Live alert service started")
+    print(f"Timezone: {cfg.live_market_timezone}")
+    print(f"Market open: {cfg.live_market_open}")
+    print(f"Market close: {cfg.live_market_close}")
+    print(f"Evaluation interval: {interval_minutes} minutes")
 
-    if not session.market_open:
-        print(f"Market closed: {session.reason}")
-        _write_live_snapshot(repo_root, {"market_open": False, "reason": session.reason, "alerts": []})
-        return 0
+    evaluation_count = 0
+    while True:
+        now = utc_now()
+        session = get_market_session_status(
+            now,
+            market_timezone=cfg.live_market_timezone,
+            market_open_hhmm=cfg.live_market_open,
+            market_close_hhmm=cfg.live_market_close,
+        )
 
+        if not session.market_open:
+            if _is_pre_market_wait_state(session):
+                wait_seconds = _seconds_until_market_open_or_interval(session, interval_minutes)
+                print(
+                    f"Waiting for market open... now={session.market_now.isoformat()} | "
+                    f"next_open={session.market_open_time.isoformat() if session.market_open_time else 'UNKNOWN'} | "
+                    f"sleep={wait_seconds}s"
+                )
+                time_module.sleep(wait_seconds)
+                continue
+
+            print(f"Market closed: {session.reason} | now={session.market_now.isoformat()}")
+            _write_live_snapshot(repo_root, {"market_open": False, "reason": session.reason, "alerts": []})
+            print("Live alert service stopped cleanly")
+            return 0
+
+        evaluation_count += 1
+        print(f"Market is open | Evaluation #{evaluation_count} started | New York time {session.market_now.isoformat()}")
+
+        try:
+            _run_live_alert_evaluation_cycle(repo_root, cfg, now, session)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            print(f"Evaluation #{evaluation_count} failed: {exc}")
+
+        latest_session = get_market_session_status(
+            utc_now(),
+            market_timezone=cfg.live_market_timezone,
+            market_open_hhmm=cfg.live_market_open,
+            market_close_hhmm=cfg.live_market_close,
+        )
+        if not latest_session.market_open:
+            print(f"Market closed: {latest_session.reason} | now={latest_session.market_now.isoformat()}")
+            _write_live_snapshot(repo_root, {"market_open": False, "reason": latest_session.reason, "alerts": []})
+            print("Live alert service stopped cleanly")
+            return 0
+
+        sleep_seconds = interval_minutes * 60
+        print(
+            f"Evaluation #{evaluation_count} complete | "
+            f"Next evaluation in approximately {interval_minutes} minutes"
+        )
+        time_module.sleep(sleep_seconds)
+
+
+def _is_pre_market_wait_state(session: MarketSessionStatus) -> bool:
+    if session.market_open:
+        return False
+    if session.market_open_time is None:
+        return False
+    return session.market_now < session.market_open_time
+
+
+def _seconds_until_market_open_or_interval(session: MarketSessionStatus, interval_minutes: int) -> int:
+    if session.market_open_time is None:
+        return max(30, interval_minutes * 60)
+
+    seconds_to_open = int((session.market_open_time - session.market_now).total_seconds())
+    if seconds_to_open <= 0:
+        return max(5, interval_minutes * 60)
+
+    return max(5, min(seconds_to_open, interval_minutes * 60))
+
+
+def _run_live_alert_evaluation_cycle(
+    repo_root: Path,
+    cfg: AppConfig,
+    now: datetime,
+    session: MarketSessionStatus,
+) -> int:
     phase = _v4_session_phase(now, cfg)
     print(f"V4 phase: {phase}")
 
@@ -156,7 +230,7 @@ def run_live_alerts(base_path: Path | None = None) -> int:
         },
     )
     print(f"Live alert evaluation complete. Alerts generated: {len(sent_alerts)}")
-    return 0
+    return len(sent_alerts)
 
 
 def _write_live_snapshot(repo_root: Path, payload: dict) -> None:
