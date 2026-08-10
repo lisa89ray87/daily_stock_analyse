@@ -9,6 +9,8 @@ from src.daily_stock_analyse.live_alerts import (
     _render_telegram_message,
     _send_telegram_alerts,
     _trade_levels_from_intraday_structure,
+    TradeLevels,
+    TriggerEvidence,
 )
 from src.daily_stock_analyse.models import BattlePlan, DataQuality, IntelligenceBlock, MarketData, ScoreBreakdown, StockAnalysis
 
@@ -200,6 +202,29 @@ def _triggered_short() -> StockAnalysis:
     a.battle_plan.target_1 = entry - 1.60
     a.battle_plan.target_2 = entry - 3.20
     return a
+
+
+def _patched_levels(
+    direction: str,
+    entry: float,
+    stop: float,
+    target1: float,
+    *,
+    target2: float | None = None,
+    risk_reward: float | None = 2.0,
+    source: str = "swing_structure",
+    detail: str | None = None,
+) -> TradeLevels:
+    return TradeLevels(
+        direction=direction,
+        entry=entry,
+        stop=stop,
+        target1=target1,
+        target2=target2,
+        risk_reward=risk_reward,
+        source=source,
+        detail=detail,
+    )
 
 
 def test_trade_level_generation_valid_long_levels():
@@ -614,6 +639,160 @@ def test_valid_trigger_and_levels_and_rr_is_alert_eligible():
         event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is not None
     assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_valid_long_direction_levels_are_eligible_with_rr_2():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("LONG", 100.0, 95.0, 110.0)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert event["risk_reward_ratio"] == 2.0
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_valid_short_direction_levels_are_eligible_with_rr_2():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("SHORT", 100.0, 105.0, 90.0)
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert event["risk_reward_ratio"] == 2.0
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_short_with_long_geometry_is_blocked_with_direction_level_mismatch():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("SHORT", 100.0, 95.0, 110.0, risk_reward=2.0, detail="mismatch")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DIRECTION_LEVEL_MISMATCH"
+
+
+def test_long_with_short_geometry_is_blocked_with_direction_level_mismatch():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("LONG", 100.0, 105.0, 90.0, risk_reward=2.0, detail="mismatch")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DIRECTION_LEVEL_MISMATCH"
+
+
+def test_direction_mismatch_cannot_pass_volume_gate():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+    a.market_data.intraday_rvol = 2.0
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("SHORT", 100.0, 95.0, 110.0, risk_reward=2.0, detail="mismatch")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DIRECTION_LEVEL_MISMATCH"
+
+
+def test_direction_mismatch_never_becomes_alert_eligible_or_dispatches_telegram():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_short()
+    a.market_data.intraday_rvol = 2.0
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+        levels_mock.return_value = _patched_levels("SHORT", 100.0, 95.0, 110.0, risk_reward=2.0, detail="mismatch")
+        event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    alerts = [x for x in [event] if x is not None]
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        sent = _send_telegram_alerts(alerts, cfg)
+
+    assert event is None
+    assert sent == 0
+    assert send_mock.call_count == 0
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DIRECTION_LEVEL_MISMATCH"
+
+
+def test_v47_directional_regression_valid_long_uber_style_case_still_confirms():
+    cfg = _cfg()
+    state = {"symbols": {"UBER": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.symbol = "UBER"
+    a.name = "UBER"
+    a.market_data.symbol = "UBER"
+    a.market_data.price = 77.77
+    a.market_data.intraday_rvol = 1.80
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+    a.battle_plan.entry_trigger_price = 77.77
+    a.battle_plan.confirmation_level = 77.77
+    a.battle_plan.invalidation_price = 75.39
+    a.battle_plan.target_1 = 82.39
+    a.battle_plan.target_2 = None
+    a.market_data.opening_range_low = 75.39
+    a.market_data.support = 75.39
+    a.market_data.opening_range_high = 82.39
+    a.market_data.resistance = 82.39
+
+    trigger_evidence = TriggerEvidence(
+        confirmed=True,
+        direction="LONG",
+        trigger_type="EMA retest continuation",
+        trigger_price=77.77,
+        reference_level=77.77,
+        current_price=77.77,
+        timestamp=now.isoformat(),
+        detail="confirmed",
+    )
+
+    v4 = {
+        "phase": "NORMAL",
+        "rvol_quality": "RELIABLE",
+        "rvol": 1.80,
+        "setup_state": "ENTRY_TRIGGERED",
+        "setup_score": 87,
+        "trigger": "EMA retest continuation",
+        "confirmation": "confirmed",
+        "state_reason": "confirmed",
+        "vwap_status": "AVAILABLE",
+        "opening_range_status": "AVAILABLE",
+        "trigger_evidence": trigger_evidence,
+    }
+
+    confirmable_result = (True, "CONFIRMED", v4)
+
+    with patch("src.daily_stock_analyse.live_alerts._is_live_confirmable", return_value=confirmable_result):
+        with patch("src.daily_stock_analyse.live_alerts._trade_levels_from_intraday_structure") as levels_mock:
+            levels_mock.return_value = _patched_levels("LONG", 77.77, 75.39, 82.39, target2=None, risk_reward=1.94)
+            event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert state["symbols"]["UBER"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+    assert state["symbols"]["UBER"]["volume_lifecycle"]["state"] == "VOLUME_CONFIRMED"
 
 
 def test_valid_trigger_low_rvol_is_blocked_rvol_too_low():

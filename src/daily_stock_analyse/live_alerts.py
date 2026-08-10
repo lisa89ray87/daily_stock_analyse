@@ -22,6 +22,7 @@ ALERT_REASON_PHASE_BLOCKED = "PHASE_BLOCKED"
 ALERT_REASON_COOLDOWN = "COOLDOWN"
 ALERT_REASON_DUPLICATE_POSITION = "DUPLICATE_POSITION"
 ALERT_REASON_INVALID_RISK_LEVELS = "INVALID_RISK_LEVELS"
+ALERT_REASON_DIRECTION_LEVEL_MISMATCH = "DIRECTION_LEVEL_MISMATCH"
 ALERT_REASON_NO_ALERT = "NO_ALERT"
 ALERT_REASON_TRIGGER_INVALIDATED = "TRIGGER_INVALIDATED"
 ALERT_REASON_TRIGGER_EXPIRED = "TRIGGER_EXPIRED"
@@ -744,6 +745,36 @@ def _is_valid_geometry(direction: str, entry: float | None, stop: float | None, 
     return False
 
 
+def _direction_level_validation(
+    direction: str,
+    entry: float | None,
+    stop: float | None,
+    target1: float | None,
+) -> tuple[bool, str | None, str | None]:
+    if entry is None or stop is None or target1 is None:
+        return False, ALERT_REASON_INVALID_RISK_LEVELS, "Missing entry, stop, or target1"
+
+    if direction == "LONG":
+        if stop >= entry or target1 <= entry:
+            return (
+                False,
+                ALERT_REASON_DIRECTION_LEVEL_MISMATCH,
+                f"Direction LONG requires stop < entry < target1 | Direction {direction} | Entry {entry:.2f} | Stop {stop:.2f} | Target1 {target1:.2f}",
+            )
+        return True, None, None
+
+    if direction == "SHORT":
+        if target1 >= entry or stop <= entry:
+            return (
+                False,
+                ALERT_REASON_DIRECTION_LEVEL_MISMATCH,
+                f"Direction SHORT requires target1 < entry < stop | Direction {direction} | Entry {entry:.2f} | Stop {stop:.2f} | Target1 {target1:.2f}",
+            )
+        return True, None, None
+
+    return False, ALERT_REASON_INVALID_RISK_LEVELS, f"Unsupported direction {direction}"
+
+
 def _rounded(value: float | None) -> float | None:
     if value is None:
         return None
@@ -919,7 +950,8 @@ def _trade_levels_from_intraday_structure(analysis: StockAnalysis, cfg: AppConfi
             target2 = None
             target2_source = ""
 
-    rr_ratio = _risk_reward_ratio_from_levels(direction, entry, stop, target1)
+    geometry_valid, geometry_reason, geometry_detail = _direction_level_validation(direction, entry, stop, target1)
+    rr_ratio = _risk_reward_ratio_from_levels(direction, entry, stop, target1) if geometry_valid else None
     source_parts = [x for x in [stop_source, target1_source or target2_source] if x]
     source = "+".join(dict.fromkeys(source_parts)) if source_parts else "none"
 
@@ -928,8 +960,8 @@ def _trade_levels_from_intraday_structure(analysis: StockAnalysis, cfg: AppConfi
         detail = "Unable to derive stop from opening range/swing/VWAP"
     elif target1 is None:
         detail = "Unable to derive target1 from structure"
-    elif not _is_valid_geometry(direction, entry, stop, target1):
-        detail = "Invalid trade geometry"
+    elif not geometry_valid:
+        detail = geometry_detail or "Invalid trade geometry"
 
     return TradeLevels(
         direction=direction,
@@ -1189,18 +1221,13 @@ def _evaluate_alert_eligibility(
             None,
         )
 
-    if not _is_valid_geometry(direction, entry, stop, target_1):
-        detail = trade_levels.detail or "Invalid risk levels"
-        if entry is None:
-            detail = "Missing entry"
-        elif stop is None:
-            detail = "Missing stop"
-        elif target_1 is None:
-            detail = "Missing target1"
+    geometry_valid, geometry_reason, geometry_detail = _direction_level_validation(direction, entry, stop, target_1)
+    if not geometry_valid:
+        detail = geometry_detail or trade_levels.detail or "Invalid risk levels"
         return (
             AlertEligibilityResult(
                 eligible=False,
-                reason=ALERT_REASON_INVALID_RISK_LEVELS,
+                reason=geometry_reason or ALERT_REASON_INVALID_RISK_LEVELS,
                 direction=direction,
                 entry=entry,
                 stop=stop,
@@ -1522,6 +1549,14 @@ def _determine_event(
             print(
                 f"{analysis.symbol}: TRADE_LEVELS | Direction {eligibility.direction} | Entry {entry_text} | "
                 f"Stop {stop_text} | Target1 {t1_text} | Target2 {t2_text} | RR {rr_text} | Source {src_text}"
+            )
+
+            direction_valid, _, direction_detail = _direction_level_validation(eligibility.direction, trade_levels.entry, trade_levels.stop, trade_levels.target1)
+            direction_status = "DIRECTION_LEVEL_VALID" if direction_valid else "DIRECTION_LEVEL_MISMATCH"
+            direction_detail_text = f" | {direction_detail}" if direction_detail else ""
+            print(
+                f"{analysis.symbol}: {direction_status} | Direction {eligibility.direction} | Entry {entry_text} | "
+                f"Stop {stop_text} | Target1 {t1_text}{direction_detail_text}"
             )
 
             if isinstance(volume_lifecycle, VolumeLifecycle):
