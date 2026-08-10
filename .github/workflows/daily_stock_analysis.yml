@@ -25,6 +25,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug secret availability
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          if [ -n "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY is present"
+          else
+            echo "RESEND_API_KEY is MISSING"
+          fi
+
+          if [ -n "$EMAIL_FROM" ]; then
+            echo "EMAIL_FROM is present"
+          else
+            echo "EMAIL_FROM is MISSING"
+          fi
+
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "OPENAI_API_KEY is present"
+          else
+            echo "OPENAI_API_KEY is MISSING"
+          fi
+
+          if [ -n "$EMAIL_TO" ]; then
+            echo "EMAIL_TO is present"
+          else
+            echo "EMAIL_TO is MISSING"
+          fi
+
       - name: Run analysis
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
