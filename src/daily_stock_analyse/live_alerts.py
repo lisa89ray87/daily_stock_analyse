@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import re
+from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -13,6 +13,34 @@ from .models import StockAnalysis
 from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
 from .runner import _analyze_symbol
 from .telegram_provider import TelegramBotProvider
+
+
+ALERT_REASON_RVOL_TOO_LOW = "RVOL_TOO_LOW"
+ALERT_REASON_RR_TOO_LOW = "RR_TOO_LOW"
+ALERT_REASON_ENTRY_NOT_CONFIRMED = "ENTRY_NOT_CONFIRMED"
+ALERT_REASON_PHASE_BLOCKED = "PHASE_BLOCKED"
+ALERT_REASON_COOLDOWN = "COOLDOWN"
+ALERT_REASON_DUPLICATE_POSITION = "DUPLICATE_POSITION"
+ALERT_REASON_INVALID_RISK_LEVELS = "INVALID_RISK_LEVELS"
+ALERT_REASON_NO_ALERT = "NO_ALERT"
+
+MIN_RISK_REWARD = 1.5
+
+
+@dataclass
+class AlertEligibilityResult:
+    eligible: bool
+    reason: str
+    direction: str
+    entry: float | None
+    stop: float | None
+    target1: float | None
+    target2: float | None
+    risk_reward: float | None
+    setup_score: int
+    rvol: float | None
+    rvol_quality: str
+    detail: str | None = None
 
 
 def run_live_alerts(base_path: Path | None = None) -> int:
@@ -239,27 +267,23 @@ def _risk_reward_ratio_from_analysis(analysis: StockAnalysis) -> float | None:
         reward = bp.target_1 - bp.entry_trigger_price
         if risk <= 0 or reward <= 0:
             return None
-        return reward / max(risk, 1e-9)
+        return reward / risk
 
     if signal == "SHORT" and bp.entry_trigger_price is not None and bp.invalidation_price is not None and bp.target_1 is not None:
         risk = bp.invalidation_price - bp.entry_trigger_price
         reward = bp.entry_trigger_price - bp.target_1
         if risk <= 0 or reward <= 0:
             return None
-        return reward / max(risk, 1e-9)
+        return reward / risk
 
-    matches = re.findall(r"-?\d+(?:\.\d+)?", bp.risk_reward_assessment or "")
-    if not matches:
-        return None
-
-    return float(matches[-1])
+    return None
 
 
 def _is_risk_reward_acceptable(analysis: StockAnalysis) -> tuple[bool, str, float | None]:
     ratio = _risk_reward_ratio_from_analysis(analysis)
     if ratio is None:
         return False, "Risk/reward unavailable", None
-    if ratio < 1.5:
+    if ratio < MIN_RISK_REWARD:
         return False, f"Risk/reward below minimum ({ratio:.2f})", ratio
     return True, "Risk/reward accepted", ratio
 
@@ -516,6 +540,32 @@ def _setup_status_summary(analysis: StockAnalysis, assessment: dict) -> str:
     )
 
 
+def _entry_transition_event_type(prev_signal: str, signal: str) -> str | None:
+    if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
+        return "WAIT_TO_LONG"
+    if prev_signal in {"WAIT", "NO_TRADE"} and signal == "SHORT":
+        return "WAIT_TO_SHORT"
+    return None
+
+
+def _risk_reward_ratio_from_levels(signal: str, entry: float | None, stop: float | None, target_1: float | None) -> float | None:
+    if entry is None or stop is None or target_1 is None:
+        return None
+
+    if signal == "LONG":
+        risk = entry - stop
+        reward = target_1 - entry
+    elif signal == "SHORT":
+        risk = stop - entry
+        reward = entry - target_1
+    else:
+        return None
+
+    if risk <= 0 or reward <= 0:
+        return None
+    return reward / risk
+
+
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
@@ -541,7 +591,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         thresholds["setup_state"] = "NO_TRADE"
         return False, "SHORT signal requires SHORT_BIAS", thresholds
 
-    rr_ok, rr_reason, rr_ratio = _is_risk_reward_acceptable(analysis)
+    rr_ratio = _risk_reward_ratio_from_analysis(analysis)
     setup_assessment = _build_live_setup_assessment(
         analysis,
         cfg,
@@ -563,16 +613,6 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         }
     )
 
-    if setup_assessment["final_setup_score"] < thresholds["min_setup"]:
-        return False, f"Setup score below {phase} threshold", thresholds
-
-    if rvol_quality == "RELIABLE":
-        if rvol_value is None or rvol_value < thresholds["min_rvol"]:
-            return False, f"Relative volume below {phase} threshold", thresholds
-        thresholds["rvol_gate"] = "PASSED"
-    else:
-        thresholds["rvol_gate"] = "BYPASSED_DATA_LIMITED"
-
     if analysis.market_alignment != "UNKNOWN" and analysis.market_alignment != "MARKET_ALIGNED":
         return False, "Market alignment filter rejected setup", thresholds
 
@@ -583,21 +623,233 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
     if analysis.signal == "SHORT" and not bearish_structure:
         return False, "No valid bearish structure", thresholds
 
-    if not rr_ok:
-        return False, rr_reason, thresholds
-
-    if not setup_assessment.get("price_confirmed"):
+    if setup_assessment.get("setup_state") != "ENTRY_TRIGGERED":
         return False, setup_assessment.get("confirmation", "No actionable trigger"), thresholds
 
     thresholds["confirmation_mode"] = "STRICT" if rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"} else "STANDARD"
-
-    if opening_range_window and setup_assessment.get("trigger") == "Opening-range breakout":
-        thresholds["state_reason"] = "opening range still developing"
-        return False, "OPENING RANGE DEVELOPING", thresholds
-
     thresholds["setup_state"] = "ENTRY_TRIGGERED"
 
     return True, "CONFIRMED", thresholds
+
+
+def _evaluate_alert_eligibility(
+    analysis: StockAnalysis,
+    symbol_state: dict,
+    cfg: AppConfig,
+    now: datetime,
+    opening_range_window: bool,
+) -> tuple[AlertEligibilityResult, dict, str | None]:
+    signal = analysis.signal
+    direction = signal if signal in {"LONG", "SHORT"} else _intended_direction(analysis)
+    entry = analysis.battle_plan.entry_trigger_price
+    stop = analysis.battle_plan.invalidation_price
+    target_1 = analysis.battle_plan.target_1
+    target_2 = analysis.battle_plan.target_2
+
+    technical_ok, technical_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
+    setup_score = int(v4.get("setup_score", analysis.setup_score))
+    rvol_value = v4.get("rvol")
+    rvol_quality = v4.get("rvol_quality", "UNAVAILABLE")
+
+    rr_ratio = _risk_reward_ratio_from_levels(signal, entry, stop, target_1)
+    if not isinstance(rr_ratio, (int, float)):
+        rr_ratio = None
+
+    if not technical_ok or v4.get("setup_state") != "ENTRY_TRIGGERED":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_ENTRY_NOT_CONFIRMED,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=technical_reason,
+            ),
+            v4,
+            None,
+        )
+
+    candidate_event_type = _entry_transition_event_type(symbol_state.get("last_signal", "WAIT"), signal)
+    if candidate_event_type is None:
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_NO_ALERT,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="No entry transition from current state",
+            ),
+            v4,
+            None,
+        )
+
+    if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == signal:
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_DUPLICATE_POSITION,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=f"Already IN_POSITION {signal}",
+            ),
+            v4,
+            candidate_event_type,
+        )
+
+    last_alert_type = symbol_state.get("last_alert_type")
+    last_alert_ts = _parse_ts(symbol_state.get("last_alert_timestamp"))
+    if last_alert_type == candidate_event_type and last_alert_ts is not None:
+        if now - last_alert_ts < timedelta(minutes=cfg.alert_cooldown_minutes):
+            return (
+                AlertEligibilityResult(
+                    eligible=False,
+                    reason=ALERT_REASON_COOLDOWN,
+                    direction=direction,
+                    entry=entry,
+                    stop=stop,
+                    target1=target_1,
+                    target2=target_2,
+                    risk_reward=rr_ratio,
+                    setup_score=setup_score,
+                    rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                    rvol_quality=rvol_quality,
+                    detail=f"Cooldown active ({cfg.alert_cooldown_minutes}m)",
+                ),
+                v4,
+                candidate_event_type,
+            )
+
+    if opening_range_window and v4.get("trigger") == "Opening-range breakout":
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_PHASE_BLOCKED,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail="Opening range still developing",
+            ),
+            v4,
+            candidate_event_type,
+        )
+
+    missing_levels: list[str] = []
+    if entry is None:
+        missing_levels.append("entry")
+    if stop is None:
+        missing_levels.append("stop")
+    if target_1 is None:
+        missing_levels.append("target_1")
+    if missing_levels or rr_ratio is None:
+        detail = "Missing or invalid risk levels"
+        if missing_levels:
+            detail = f"Missing {', '.join(missing_levels)}"
+        elif rr_ratio is None:
+            detail = "Invalid long/short risk-reward geometry"
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_INVALID_RISK_LEVELS,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=detail,
+            ),
+            v4,
+            candidate_event_type,
+        )
+
+    min_rvol = cfg.v4_opening_min_rvol if v4.get("phase") == "OPENING" else cfg.v4_normal_min_rvol
+    if rvol_quality == "RELIABLE" and (not isinstance(rvol_value, (int, float)) or rvol_value < min_rvol):
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_RVOL_TOO_LOW,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=f"RVOL {rvol_value:.2f} < {min_rvol:.2f}" if isinstance(rvol_value, (int, float)) else "RVOL unavailable",
+            ),
+            v4,
+            candidate_event_type,
+        )
+
+    if rr_ratio < MIN_RISK_REWARD:
+        return (
+            AlertEligibilityResult(
+                eligible=False,
+                reason=ALERT_REASON_RR_TOO_LOW,
+                direction=direction,
+                entry=entry,
+                stop=stop,
+                target1=target_1,
+                target2=target_2,
+                risk_reward=rr_ratio,
+                setup_score=setup_score,
+                rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+                rvol_quality=rvol_quality,
+                detail=f"RR {rr_ratio:.2f} < minimum {MIN_RISK_REWARD:.2f}",
+            ),
+            v4,
+            candidate_event_type,
+        )
+
+    return (
+        AlertEligibilityResult(
+            eligible=True,
+            reason="ALERT_ELIGIBLE",
+            direction=direction,
+            entry=entry,
+            stop=stop,
+            target1=target_1,
+            target2=target_2,
+            risk_reward=rr_ratio,
+            setup_score=setup_score,
+            rvol=rvol_value if isinstance(rvol_value, (int, float)) else None,
+            rvol_quality=rvol_quality,
+            detail="Execution and risk gates passed",
+        ),
+        v4,
+        candidate_event_type,
+    )
 
 
 def _determine_event(
@@ -657,8 +909,9 @@ def _determine_event(
             title = "TARGET REACHED"
 
     v4 = {"phase": phase, "rvol_quality": rvol_quality, "rvol": rvol_value}
+    eligibility: AlertEligibilityResult | None = None
     if event_type is None:
-        is_confirmable, live_reason, v4 = _is_live_confirmable(analysis, cfg, opening_range_window, now)
+        eligibility, v4, candidate_event_type = _evaluate_alert_eligibility(analysis, symbol_state, cfg, now, opening_range_window)
         symbol_state["last_setup_state"] = v4.get("setup_state", "NO_TRADE")
         if "setup_components" in v4:
             _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
@@ -672,47 +925,52 @@ def _determine_event(
                     },
                 )
             )
-        if not is_confirmable:
+
+        if v4.get("setup_state") == "ENTRY_TRIGGERED":
+            rvol_log = f"{eligibility.rvol:.2f}" if isinstance(eligibility.rvol, (int, float)) else eligibility.rvol_quality
+            rr_log = f"{eligibility.risk_reward:.2f}" if isinstance(eligibility.risk_reward, (int, float)) else "UNAVAILABLE"
+            print(f"{analysis.symbol}: ENTRY_TRIGGERED | SetupScore {eligibility.setup_score} | RVOL {rvol_log} | RR {rr_log}")
+
+        if not eligibility.eligible:
+            symbol_state["last_alert_decision"] = "ALERT_BLOCKED" if v4.get("setup_state") == "ENTRY_TRIGGERED" else "NO_ALERT"
+            symbol_state["last_alert_reason"] = eligibility.reason
+            if v4.get("setup_state") == "ENTRY_TRIGGERED":
+                detail = eligibility.detail or ""
+                if detail:
+                    print(f"{analysis.symbol}: ALERT_BLOCKED | {eligibility.reason} | {detail}")
+                else:
+                    print(f"{analysis.symbol}: ALERT_BLOCKED | {eligibility.reason}")
+            else:
+                detail = eligibility.detail or eligibility.reason
+                print(
+                    f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
+                    f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | {detail}. No alert generated."
+                )
+            return None
+
+        event_type = candidate_event_type
+        symbol_state["last_alert_decision"] = "ALERT_ELIGIBLE"
+        symbol_state["last_alert_reason"] = "ALERT_ELIGIBLE"
+        rr_log = f"{eligibility.risk_reward:.2f}" if isinstance(eligibility.risk_reward, (int, float)) else "UNAVAILABLE"
+        print(
+            f"{analysis.symbol}: ALERT_ELIGIBLE | {eligibility.direction} | "
+            f"Entry {eligibility.entry:.2f} | Stop {eligibility.stop:.2f} | "
+            f"Target1 {eligibility.target1:.2f} | RR {rr_log}"
+        )
+
+        if event_type is None:
             print(
                 f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
-                f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | {live_reason}. No alert generated."
+                f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | No entry transition. No alert generated."
             )
             return None
-
-        if v4.get("setup_state") != "ENTRY_TRIGGERED":
-            return None
-
-        if prev_signal in {"WAIT", "NO_TRADE"} and signal == "LONG":
-            if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == "LONG":
-                return None
-            event_type = "WAIT_TO_LONG"
-        elif prev_signal in {"WAIT", "NO_TRADE"} and signal == "SHORT":
-            if symbol_state.get("position_state") == "IN_POSITION" and symbol_state.get("active_direction") == "SHORT":
-                return None
-            event_type = "WAIT_TO_SHORT"
-        elif prev_signal == "LONG" and signal not in {"LONG", "WAIT"}:
-            event_type = "LONG_EXIT"
-        elif prev_signal == "SHORT" and signal not in {"SHORT", "WAIT"}:
-            event_type = "SHORT_EXIT"
 
     if event_type is None:
         return None
 
-    if event_type in {"WAIT_TO_LONG", "WAIT_TO_SHORT"}:
-        required = {
-            "entry": analysis.battle_plan.entry_trigger_price,
-            "stop": analysis.battle_plan.invalidation_price,
-            "target_1": target_1,
-            "price": price,
-            "risk_reward": _risk_reward_ratio_from_analysis(analysis),
-        }
-        if any(v is None for v in required.values()):
-            print(f"{analysis.symbol}: ENTRY_TRIGGERED suppressed due to missing required trade levels.")
-            return None
-
     last_alert_type = symbol_state.get("last_alert_type")
     last_alert_ts = _parse_ts(symbol_state.get("last_alert_timestamp"))
-    if last_alert_type == event_type and last_alert_ts is not None:
+    if event_type not in {"WAIT_TO_LONG", "WAIT_TO_SHORT"} and last_alert_type == event_type and last_alert_ts is not None:
         if now - last_alert_ts < timedelta(minutes=cfg.alert_cooldown_minutes):
             return None
 
@@ -731,7 +989,7 @@ def _determine_event(
         "title": f"{emoji} {title}",
         "reason": analysis.main_reason,
         "price": price,
-        "setup_score": v4.get("setup_score", analysis.setup_score),
+        "setup_score": eligibility.setup_score if eligibility is not None else v4.get("setup_score", analysis.setup_score),
         "setup_state": v4.get("setup_state", "ENTRY_TRIGGERED"),
         "direction_bias": analysis.direction_bias,
         "market_regime": analysis.market_alignment,
@@ -754,7 +1012,7 @@ def _determine_event(
             v4.get("opening_range_status")
             or ("AVAILABLE" if analysis.market_data.opening_range_high is not None and analysis.market_data.opening_range_low is not None else "UNAVAILABLE")
         ),
-        "risk_reward_ratio": _risk_reward_ratio_from_analysis(analysis),
+        "risk_reward_ratio": eligibility.risk_reward if eligibility is not None else _risk_reward_ratio_from_analysis(analysis),
     }
 
 

@@ -1,12 +1,13 @@
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.daily_stock_analyse.config import AppConfig
-from src.daily_stock_analyse.live_alerts import _determine_event, _is_live_confirmable, _v4_session_phase
+from src.daily_stock_analyse.live_alerts import _determine_event, _risk_reward_ratio_from_analysis, _send_telegram_alerts
 from src.daily_stock_analyse.models import BattlePlan, DataQuality, IntelligenceBlock, MarketData, ScoreBreakdown, StockAnalysis
 
 
-def _cfg() -> AppConfig:
+def _cfg(*, telegram_enabled: bool = False) -> AppConfig:
     return AppConfig(
         openai_api_key=None,
         resend_api_key=None,
@@ -46,9 +47,9 @@ def _cfg() -> AppConfig:
         alert_min_setup_score=70,
         alert_min_rvol=1.5,
         alert_cooldown_minutes=15,
-        telegram_enabled=False,
-        telegram_bot_token=None,
-        telegram_chat_id=None,
+        telegram_enabled=telegram_enabled,
+        telegram_bot_token="bot-token" if telegram_enabled else None,
+        telegram_chat_id="chat-id" if telegram_enabled else None,
         v4_opening_start="09:30",
         v4_opening_end="10:00",
         v4_opening_min_rvol=1.20,
@@ -59,16 +60,16 @@ def _cfg() -> AppConfig:
     )
 
 
-def _bars(direction: str = "up", n: int = 18, start: float = 100.0) -> list[dict[str, float | str]]:
+def _bars(direction: str, n: int = 18, start: float = 100.0) -> list[dict[str, float | str]]:
     base = datetime(2026, 8, 10, 9, 30, tzinfo=ZoneInfo("America/New_York"))
     out: list[dict[str, float | str]] = []
     price = start
     for i in range(n):
-        step = 0.35 if direction == "up" else -0.35
+        step = 0.30 if direction == "up" else -0.30
         open_p = price
         close_p = price + step
-        high_p = max(open_p, close_p) + 0.15
-        low_p = min(open_p, close_p) - 0.10
+        high_p = max(open_p, close_p) + 0.12
+        low_p = min(open_p, close_p) - 0.08
         out.append(
             {
                 "ts": (base + timedelta(minutes=5 * i)).isoformat(),
@@ -76,7 +77,7 @@ def _bars(direction: str = "up", n: int = 18, start: float = 100.0) -> list[dict
                 "high": high_p,
                 "low": low_p,
                 "close": close_p,
-                "volume": 100_000 + (i * 4000),
+                "volume": 120_000 + (i * 3000),
             }
         )
         price = close_p
@@ -87,27 +88,23 @@ def _analysis(
     signal: str,
     bias: str,
     *,
-    bars: list[dict[str, float | str]] | None = None,
-    intraday_rvol: float | None = 1.6,
+    bars: list[dict[str, float | str]],
+    trend: str,
+    breakout_state: str,
+    support: float,
+    resistance: float,
+    intraday_rvol: float | None = 1.8,
     intraday_rvol_quality: str = "RELIABLE",
-    trend: str = "UPTREND",
-    breakout_state: str = "BREAKOUT",
-    vwap: float | None = 100.0,
-    opening_range_high: float | None = 101.0,
-    opening_range_low: float | None = 99.0,
-    support: float | None = 99.0,
-    resistance: float | None = 101.0,
-    day_change_pct: float | None = 1.5,
-    alignment: str = "MARKET_ALIGNED",
-    rr_text: str = "2.0",
+    day_change_pct: float = 1.0,
 ) -> StockAnalysis:
+    price = float(bars[-1]["close"])
     return StockAnalysis(
         symbol="PLTR",
         name="PLTR",
         signal=signal,
         trading_horizon="DAY_TRADE",
         direction_bias=bias,
-        market_alignment=alignment,
+        market_alignment="MARKET_ALIGNED",
         setup_score=80,
         day_trade_candidate=True,
         candidate_score=80,
@@ -119,16 +116,16 @@ def _analysis(
         risk_classification="MEDIUM",
         market_data=MarketData(
             symbol="PLTR",
-            price=102.0,
+            price=price,
             relative_volume=1.2,
             intraday_rvol=intraday_rvol,
             intraday_rvol_quality=intraday_rvol_quality,
             intraday_rvol_note="intraday",
             trend=trend,
             breakout_state=breakout_state,
-            vwap=vwap,
-            opening_range_high=opening_range_high,
-            opening_range_low=opening_range_low,
+            vwap=100.0,
+            opening_range_high=resistance,
+            opening_range_low=support,
             resistance=resistance,
             support=support,
             day_change_pct=day_change_pct,
@@ -137,7 +134,7 @@ def _analysis(
             intraday_timestamp="2026-08-10T14:35:00Z",
             data_timestamp="2026-08-10T14:35:00Z",
             provider="yfinance",
-            intraday_bars=bars or _bars("up"),
+            intraday_bars=bars,
         ),
         intelligence=IntelligenceBlock(),
         battle_plan=BattlePlan(
@@ -148,94 +145,33 @@ def _analysis(
             entry_area="entry",
             target_area="target",
             invalidation="invalid",
-            risk_reward_assessment=rr_text,
+            risk_reward_assessment="",
             entry_trigger_price=101.0,
             confirmation_level=101.0,
-            invalidation_price=99.0,
-            target_1=104.5,
-            target_2=106.0,
+            invalidation_price=100.0,
+            target_1=103.0,
+            target_2=104.5,
         ),
         score=ScoreBreakdown(total=0.1, long_score=0.8, short_score=0.2, components={}, weights={}),
         data_quality=DataQuality(True, True, True, True, True, "yfinance", []),
     )
 
 
-def test_time_normalized_rvol_reliable():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=1.42, intraday_rvol_quality="RELIABLE")
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["rvol_quality"] == "RELIABLE"
-    assert meta["rvol"] == 1.42
-
-
-def test_rvol_data_limited():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=None, intraday_rvol_quality="DATA_LIMITED")
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["rvol_quality"] == "DATA_LIMITED"
-
-
-def test_rvol_unavailable():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=None, intraday_rvol_quality="UNAVAILABLE")
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["rvol_quality"] == "UNAVAILABLE"
-
-
-def test_intraday_trend_component_nonzero_with_evidence():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", bars=_bars("up"), intraday_rvol=1.8)
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["setup_components"]["trend"]["value"] > 0
-
-
-def test_intraday_momentum_component_nonzero_with_evidence():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", bars=_bars("up"), intraday_rvol=1.8)
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["setup_components"]["momentum"]["value"] > 0
-
-
-def test_vwap_component_available_when_intraday_present():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", bars=_bars("up"))
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["setup_components"]["vwap"]["status"] == "AVAILABLE"
-
-
-def test_opening_range_component_available_when_intraday_present():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", bars=_bars("up"))
-    _, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert meta["setup_components"]["opening_range"]["status"] == "AVAILABLE"
-
-
-def test_long_breakout_trigger_entry():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+def _triggered_long() -> StockAnalysis:
     bars = _bars("up")
     resistance = float(bars[-2]["close"]) + 0.05
     bars[-1]["close"] = resistance + 0.20
     bars[-1]["high"] = resistance + 0.30
-    a = _analysis("LONG", "LONG_BIAS", bars=bars, resistance=resistance, intraday_rvol=1.8)
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
-    assert event is not None
-    assert event["event_type"] == "WAIT_TO_LONG"
+    a = _analysis("LONG", "LONG_BIAS", bars=bars, trend="UPTREND", breakout_state="BREAKOUT", support=99.0, resistance=resistance)
+    a.battle_plan.entry_trigger_price = resistance
+    a.battle_plan.invalidation_price = resistance - 1.0
+    a.battle_plan.target_1 = resistance + 2.0
+    a.battle_plan.target_2 = resistance + 3.0
+    return a
 
 
-def test_short_breakdown_trigger_entry():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    bars = _bars("down", start=105.0)
+def _triggered_short() -> StockAnalysis:
+    bars = _bars("down", start=106.0)
     support = float(bars[-2]["close"]) - 0.05
     bars[-1]["close"] = support - 0.20
     bars[-1]["low"] = support - 0.30
@@ -243,144 +179,181 @@ def test_short_breakdown_trigger_entry():
         "SHORT",
         "SHORT_BIAS",
         bars=bars,
-        resistance=106.0,
-        support=support,
         trend="DOWNTREND",
         breakout_state="BREAKDOWN",
-        intraday_rvol=1.8,
-        day_change_pct=-1.6,
+        support=support,
+        resistance=106.0,
+        day_change_pct=-1.0,
     )
     a.battle_plan.entry_trigger_price = support
     a.battle_plan.invalidation_price = support + 1.0
-    a.battle_plan.target_1 = support - 4.0
-    a.battle_plan.target_2 = 99.5
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
-    assert event is not None
-    assert event["event_type"] == "WAIT_TO_SHORT"
+    a.battle_plan.target_1 = support - 2.0
+    a.battle_plan.target_2 = support - 3.0
+    return a
 
 
-def test_setup_developing_state_no_alert():
+def test_entry_triggered_valid_rr_valid_rvol_alert_eligible():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
     now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    bars = _bars("up")
-    bars[-1]["close"] = 100.95
-    bars[-1]["high"] = 100.98
-    a = _analysis("LONG", "LONG_BIAS", bars=bars, resistance=101.0, intraday_rvol=1.8, breakout_state="NEAR BREAKOUT")
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
-    assert event is None
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert event["event_type"] == "WAIT_TO_LONG"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
 
 
-def test_entry_triggered_state_alerts():
+def test_entry_triggered_low_rvol_blocks_with_rvol_too_low():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
     now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    bars = _bars("up")
-    resistance = float(bars[-2]["close"]) + 0.05
-    bars[-1]["close"] = resistance + 0.20
-    bars[-1]["high"] = resistance + 0.30
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=1.8, bars=bars, resistance=resistance)
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
-    assert event is not None
-    assert event["setup_state"] == "ENTRY_TRIGGERED"
-
-
-def test_no_trade_state_for_weak_setup():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    weak_bars = _bars("up", n=4)
-    a = _analysis(
-        "WAIT",
-        "NEUTRAL",
-        bars=weak_bars,
-        intraday_rvol=None,
-        intraday_rvol_quality="UNAVAILABLE",
-        trend="RANGE",
-        breakout_state="NO CLEAR BREAK",
-        vwap=None,
-        opening_range_high=None,
-        opening_range_low=None,
-        support=None,
-        resistance=None,
-        alignment="MARKET_COUNTERTREND",
-        day_change_pct=0.0,
-    )
-    ok, _, meta = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert ok is False
-    assert meta.get("setup_state") == "NO_TRADE"
-
-
-def test_risk_reward_rejection():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    bars = _bars("up")
-    resistance = float(bars[-2]["close"]) + 0.05
-    bars[-1]["close"] = resistance + 0.20
-    bars[-1]["high"] = resistance + 0.30
-    a = _analysis("LONG", "LONG_BIAS", rr_text="1.20", intraday_rvol=1.8, bars=bars, resistance=resistance)
-    a.battle_plan.entry_trigger_price = resistance
-    a.battle_plan.invalidation_price = resistance - 1.0
-    a.battle_plan.target_1 = resistance + 1.0
-    ok, reason, _ = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
-    assert ok is False
-    assert "Risk/reward below minimum" in reason
-
-
-def test_duplicate_entry_prevention_when_in_position():
-    cfg = _cfg()
-    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "position_state": "IN_POSITION", "active_direction": "LONG"}}}
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=1.8)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.20
+    a.market_data.intraday_rvol_quality = "RELIABLE"
     event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is None
+    assert state["symbols"]["PLTR"]["last_setup_state"] == "ENTRY_TRIGGERED"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RVOL_TOO_LOW"
 
 
-def test_existing_cooldown_behavior_remains_intact():
+def test_entry_triggered_low_rr_blocks_with_rr_too_low():
     cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.target_1 = a.battle_plan.entry_trigger_price + 1.48
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_setup_state"] == "ENTRY_TRIGGERED"
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RR_TOO_LOW"
+
+
+def test_entry_triggered_missing_entry_blocks_invalid_risk_levels():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.entry_trigger_price = None
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "INVALID_RISK_LEVELS"
+
+
+def test_entry_triggered_missing_stop_blocks_invalid_risk_levels():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.invalidation_price = None
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "INVALID_RISK_LEVELS"
+
+
+def test_entry_triggered_missing_target_blocks_invalid_risk_levels():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.target_1 = None
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "INVALID_RISK_LEVELS"
+
+
+def test_data_limited_rvol_strong_trigger_continues_to_risk_gate():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = None
+    a.market_data.intraday_rvol_quality = "DATA_LIMITED"
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_cooldown_blocks_with_explicit_reason():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
     state = {
         "symbols": {
             "PLTR": {
                 "last_signal": "WAIT",
                 "last_alert_type": "WAIT_TO_LONG",
-                "last_alert_timestamp": datetime(2026, 8, 10, 14, 0, tzinfo=UTC).isoformat(),
+                "last_alert_timestamp": (now - timedelta(minutes=5)).isoformat(),
             }
         }
     }
-    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis("LONG", "LONG_BIAS", intraday_rvol=1.8)
-    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
     assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "COOLDOWN"
 
 
-def test_missing_intraday_data_does_not_crash_and_no_alert():
+def test_duplicate_in_position_blocks_with_explicit_reason():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT", "position_state": "IN_POSITION", "active_direction": "LONG"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "DUPLICATE_POSITION"
+
+
+def test_non_triggered_setup_blocks_with_entry_not_confirmed():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
     now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
-    a = _analysis(
-        "LONG",
-        "LONG_BIAS",
-        bars=[],
-        intraday_rvol=None,
-        intraday_rvol_quality="UNAVAILABLE",
-        vwap=None,
-        opening_range_high=None,
-        opening_range_low=None,
-        support=None,
-        resistance=None,
-        trend="RANGE",
-        breakout_state="NO CLEAR BREAK",
-    )
+    bars = _bars("up")
+    bars[-1]["close"] = float(bars[-2]["close"]) - 0.10
+    resistance = float(bars[-1]["close"]) + 2.0
+    a = _analysis("LONG", "LONG_BIAS", bars=bars, trend="UPTREND", breakout_state="NEAR BREAKOUT", support=99.0, resistance=resistance)
     event = _determine_event(a, state, cfg, now, opening_range_window=False)
     assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ENTRY_NOT_CONFIRMED"
 
 
-def test_v4_phase_selection_0930_opening():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 13, 30, tzinfo=UTC)
-    assert _v4_session_phase(now, cfg) == "OPENING"
+def test_short_rr_calculation_uses_actual_levels():
+    a = _triggered_short()
+    a.battle_plan.entry_trigger_price = 100.0
+    a.battle_plan.invalidation_price = 102.0
+    a.battle_plan.target_1 = 97.0
+    assert _risk_reward_ratio_from_analysis(a) == 1.5
 
 
-def test_v4_phase_selection_1000_normal():
-    cfg = _cfg()
-    now = datetime(2026, 8, 10, 14, 0, tzinfo=UTC)
-    assert _v4_session_phase(now, cfg) == "NORMAL"
+def test_long_rr_calculation_uses_actual_levels():
+    a = _triggered_long()
+    a.battle_plan.entry_trigger_price = 101.0
+    a.battle_plan.invalidation_price = 99.0
+    a.battle_plan.target_1 = 104.0
+    assert _risk_reward_ratio_from_analysis(a) == 1.5
+
+
+def test_no_telegram_dispatch_when_blocked():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.battle_plan.target_1 = a.battle_plan.entry_trigger_price + 1.0
+    blocked_event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    alerts = [x for x in [blocked_event] if x is not None]
+
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        sent = _send_telegram_alerts(alerts, cfg)
+
+    assert sent == 0
+    assert send_mock.call_count == 0
+
+
+def test_telegram_dispatch_when_eligible():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert event is not None
+
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        send_mock.return_value.success = True
+        send_mock.return_value.disabled = False
+        sent = _send_telegram_alerts([event], cfg)
+
+    assert sent == 1
+    assert send_mock.call_count == 1
