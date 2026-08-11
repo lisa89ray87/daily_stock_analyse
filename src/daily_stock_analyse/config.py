@@ -77,6 +77,7 @@ class AppConfig:
     v4_normal_min_setup_score: int = 70
     v4_opening_range_minutes: int = 30
     v4_max_trigger_age_minutes: int = 30
+    event_alert_max_workers: int = 6
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -259,4 +260,5 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         v4_normal_min_setup_score=_env_int("V4_NORMAL_MIN_SETUP_SCORE", 70),
         v4_opening_range_minutes=_env_int("V4_OPENING_RANGE_MINUTES", 30),
         v4_max_trigger_age_minutes=_env_int("V4_MAX_TRIGGER_AGE_MINUTES", 30),
+        event_alert_max_workers=max(1, _env_int("EVENT_ALERT_MAX_WORKERS", 6)),
     )
