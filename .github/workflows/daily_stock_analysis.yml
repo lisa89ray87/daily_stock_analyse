@@ -107,6 +107,8 @@ jobs:
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
           NEWS_PROVIDER: "yfinance,google_rss,bing_rss"
           NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
+          NEWS_RSS_MIN_SOURCE_QUALITY: "40"
+          NEWS_RSS_ALLOW_LOW_QUALITY: "0"
           NEWS_DIAGNOSTICS: "1"
           DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}
           ENABLE_OUTCOME_TRACKING: ${{ vars.ENABLE_OUTCOME_TRACKING }}
