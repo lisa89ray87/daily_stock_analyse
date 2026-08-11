@@ -37,6 +37,30 @@ def _summary(data: IntelligenceBlock) -> str:
     )
 
 
+def _provider_diagnostics(provider: NewsProvider) -> str:
+    snapshot_fn = getattr(provider, "diagnostic_snapshot", None)
+    if not callable(snapshot_fn):
+        return ""
+    try:
+        snapshot = snapshot_fn()
+    except Exception:
+        return ""
+    if not isinstance(snapshot, dict):
+        return ""
+    fields = (
+        "selected_instance",
+        "http_status",
+        "raw_result_count",
+        "parsed_result_count",
+        "collected_count",
+        "deduped_count",
+        "freshness_input_count",
+        "freshness_filtered_count",
+    )
+    parts = [f"{key}={snapshot[key]}" for key in fields if key in snapshot]
+    return " | " + " ".join(parts) if parts else ""
+
+
 class DiagnosticNewsProvider(NewsProvider):
     """Transparent wrapper that traces provider output without changing it."""
 
@@ -58,7 +82,7 @@ class DiagnosticNewsProvider(NewsProvider):
         if _enabled():
             print(
                 f"NEWS_DIAGNOSTIC | stage=provider | provider={self._label} | "
-                f"symbol={symbol} | {_summary(data)}"
+                f"symbol={symbol} | {_summary(data)}{_provider_diagnostics(self._provider)}"
             )
             for event in data.structured_catalysts[:5]:
                 print(
