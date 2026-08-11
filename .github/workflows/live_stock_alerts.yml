@@ -12,10 +12,11 @@ on:
           - "false"
           - "true"
   schedule:
-    # Start near U.S. market open in UTC. In EST this is pre-open and the Python service waits.
-    - cron: "25 13 * * 1-5"
-    # GitHub-hosted jobs have runtime limits; this second trigger restarts the service for late session.
-    - cron: "30 19 * * 1-5"
+    # Timezone-aware schedules remove the manual EDT/EST split.
+    - cron: "25 9 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "30 15 * * 1-5"
+      timezone: "America/New_York"
 
 env:
   SEND_EMAIL: "0"
@@ -23,7 +24,9 @@ env:
 jobs:
   live-alerts:
     concurrency:
-      group: live-stock-alerts-${{ github.ref_name }}
+      # Only one live-trade-alert worker may run at a time.
+      # A restart replaces the stale worker instead of creating duplicate alerts.
+      group: live-stock-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 355
@@ -110,3 +113,4 @@ jobs:
         with:
           name: live-stock-alert-artifacts
           path: artifacts/
+          if-no-files-found: warn
