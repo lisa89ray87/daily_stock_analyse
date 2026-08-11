@@ -41,7 +41,6 @@ class AggregatedNewsProvider(NewsProvider):
         for event in deduped:
             published = _parse_timestamp(event.published_at)
             if published is None:
-                # Do not treat undated articles as fresh catalysts.
                 continue
             if published >= cutoff:
                 fresh.append(event)
@@ -106,7 +105,7 @@ def create_news_provider(provider_name: str, **kwargs) -> NewsProvider:
     if len(providers) == 1:
         return providers[0][1]
 
-    max_age_hours = kwargs.get("max_age_hours", 24)
+    max_age_hours = kwargs.get("news_max_age_hours", kwargs.get("max_age_hours", 24))
     return wrap(AggregatedNewsProvider(providers, max_age_hours=max_age_hours), "aggregated")
 
 
