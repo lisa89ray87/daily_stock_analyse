@@ -148,6 +148,12 @@ class _SchemaCursor:
                 column["is_nullable"] = "YES"
             return self
 
+        if lower.startswith("alter table signals alter column action drop not null"):
+            column = self.state["tables"]["signals"]["columns"].get("action")
+            if isinstance(column, dict):
+                column["is_nullable"] = "YES"
+            return self
+
         if lower.startswith("alter table signals rename column confidence to legacy_confidence_numeric"):
             table = self.state["tables"]["signals"]
             table["columns"]["legacy_confidence_numeric"] = table["columns"].pop("confidence")
@@ -306,7 +312,7 @@ def test_ensure_schema_preserves_uuid_signal_id_and_adds_run_id_idempotently():
     assert signals["rows"][0]["run_id"] is None
     assert "uq_signals_run_symbol_direction" in state["indexes"]
     assert "fk_signals_run_id" in state["constraints"]
-    assert state["migrations"] == {1, 2, 3, 4}
+    assert state["migrations"] == {1, 2, 3, 4, 5}
 
 
 def test_ensure_schema_migrates_signal_outcomes_signal_id_to_match_uuid_signals():
@@ -363,6 +369,21 @@ def test_ensure_schema_relaxes_legacy_strategy_id_not_null_requirement():
     strategy_column = state["tables"]["signals"]["columns"]["strategy_id"]
     assert isinstance(strategy_column, dict)
     assert strategy_column["is_nullable"] == "YES"
+
+
+def test_ensure_schema_relaxes_legacy_action_not_null_requirement():
+    state = _legacy_uuid_state()
+    state["tables"]["signals"]["columns"]["action"] = {"type": "text", "is_nullable": "NO", "column_default": None}
+    state["tables"]["signals"]["rows"][0]["action"] = "BUY"
+    conn = _SchemaConn(state)
+
+    ensure_schema(conn)
+    ensure_schema(conn)
+
+    action_column = state["tables"]["signals"]["columns"]["action"]
+    assert isinstance(action_column, dict)
+    assert action_column["is_nullable"] == "YES"
+    assert state["tables"]["signals"]["rows"][0]["action"] == "BUY"
 
 
 def test_uuid_signal_id_is_preserved_by_outcome_engine():
