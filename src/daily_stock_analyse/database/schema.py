@@ -102,6 +102,7 @@ def _ensure_signals_schema(cur: Any) -> None:
 
     for ddl in [
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS run_id TEXT",
+        "ALTER TABLE signals ADD COLUMN IF NOT EXISTS direction TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS status TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS confidence TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry_price DOUBLE PRECISION",
@@ -127,6 +128,16 @@ def _ensure_signals_schema(cur: Any) -> None:
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
     ]:
         cur.execute(ddl)
+
+    refreshed_columns = _column_map(cur, "signals")
+    if "signal" in refreshed_columns:
+        cur.execute(
+            """
+            UPDATE signals
+            SET direction = COALESCE(direction, signal::text)
+            WHERE direction IS NULL AND signal IS NOT NULL
+            """
+        )
 
     if not _constraint_exists(cur, "fk_signals_run_id"):
         cur.execute(

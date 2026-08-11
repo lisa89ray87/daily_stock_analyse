@@ -187,6 +187,13 @@ class _SchemaCursor:
                         break
             return self
 
+        if lower.startswith("update signals set direction = coalesce(direction, signal::text)"):
+            signal_rows = self.state["tables"].get("signals", {}).get("rows", [])
+            for row in signal_rows:
+                if row.get("direction") is None and row.get("signal") is not None:
+                    row["direction"] = row.get("signal")
+            return self
+
         if lower.startswith("delete from signal_outcomes"):
             run_id = params[0]
             signal_rows = self.state["tables"].get("signals", {}).get("rows", [])
@@ -288,6 +295,19 @@ def test_ensure_schema_migrates_signal_outcomes_signal_id_to_match_uuid_signals(
     assert outcomes["rows"][0]["signal_id"] is None
     assert "fk_signal_outcomes_signal_id" in state["constraints"]
     assert "uq_signal_outcomes_signal_eval_time" in state["indexes"]
+
+
+def test_ensure_schema_backfills_direction_from_legacy_signal_column():
+    state = _legacy_uuid_state()
+    state["tables"]["signals"]["columns"]["signal"] = "text"
+    state["tables"]["signals"]["rows"][0]["signal"] = "LONG"
+    conn = _SchemaConn(state)
+
+    ensure_schema(conn)
+
+    signals = state["tables"]["signals"]
+    assert "direction" in signals["columns"]
+    assert signals["rows"][0]["direction"] == "LONG"
 
 
 def test_uuid_signal_id_is_preserved_by_outcome_engine():
