@@ -163,11 +163,13 @@ def _analyze_symbol(
 
     battle_plan = _build_battle_plan(md, decision.signal)
 
+    premarket_available = _has_premarket_data(md)
+
     warnings = _build_data_quality_warnings(symbol, md)
     data_quality = DataQuality(
         price_available=md.price is not None,
         intraday_available=md.vwap is not None or md.opening_range_high is not None,
-        premarket_available=md.premarket_price is not None,
+        premarket_available=premarket_available,
         volume_available=md.volume is not None,
         timestamp_available=md.data_timestamp is not None,
         provider=md.provider,
@@ -199,7 +201,7 @@ def _analyze_symbol(
             "market_data_available": md.price is not None,
             "news_available": intelligence.news_available,
             "intraday_available": md.vwap is not None or md.opening_range_high is not None,
-            "premarket_available": md.premarket_price is not None,
+            "premarket_available": premarket_available,
         },
     )
 
@@ -212,13 +214,24 @@ def _display_name(symbol: str) -> str:
     return symbol
 
 
+def _has_premarket_data(md) -> bool:
+    return md.premarket_price is not None or md.latest_extended_session == "PREMARKET"
+
+
+def _has_after_hours_data(md) -> bool:
+    return md.after_hours_price is not None or md.latest_extended_session == "AFTER_HOURS"
+
+
 def _build_data_quality_warnings(symbol: str, md) -> list[str]:
     warnings: list[str] = []
-    if md.premarket_price is None:
+    premarket_available = _has_premarket_data(md)
+    after_hours_available = _has_after_hours_data(md)
+
+    if not premarket_available:
         warnings.append("PREMARKET_UNAVAILABLE")
     if md.vwap is None and md.opening_range_high is None:
         warnings.append("INTRADAY_UNAVAILABLE")
-    if md.premarket_volume is None:
+    if not (premarket_available or after_hours_available):
         warnings.append("EXTENDED_HOURS_UNAVAILABLE")
     if md.volume is None:
         warnings.append("VOLUME_UNAVAILABLE")

@@ -1,6 +1,6 @@
 from src.daily_stock_analyse.config import AppConfig
 from src.daily_stock_analyse.models import IntelligenceBlock, MarketData
-from src.daily_stock_analyse.runner import _analyze_symbol
+from src.daily_stock_analyse.runner import _analyze_symbol, _build_data_quality_warnings
 
 
 class _FakeMarketProvider:
@@ -81,3 +81,63 @@ def test_no_silent_fallback_from_skhy_to_krx_ticker():
     result = _analyze_symbol("SKHY", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
     assert result.symbol == "SKHY"
     assert result.name == "SK hynix"
+
+
+def test_extended_hours_warning_not_added_when_after_hours_data_exists():
+    md = MarketData(
+        symbol="AMD",
+        price=100.0,
+        regular_price=100.0,
+        previous_close=99.0,
+        overnight_reference_price=99.0,
+        volume=1_000_000,
+        provider="yfinance",
+        data_timestamp="2026-08-10T00:00:00Z",
+        premarket_price=None,
+        after_hours_price=101.0,
+        premarket_volume=None,
+        latest_extended_session="AFTER_HOURS",
+    )
+    warnings = _build_data_quality_warnings("AMD", md)
+    assert "PREMARKET_UNAVAILABLE" in warnings
+    assert "EXTENDED_HOURS_UNAVAILABLE" not in warnings
+
+
+def test_extended_hours_warning_added_when_no_extended_prices_or_session():
+    md = MarketData(
+        symbol="AMD",
+        price=100.0,
+        regular_price=100.0,
+        previous_close=99.0,
+        overnight_reference_price=99.0,
+        volume=1_000_000,
+        provider="yfinance",
+        data_timestamp="2026-08-10T00:00:00Z",
+        premarket_price=None,
+        after_hours_price=None,
+        premarket_volume=None,
+        latest_extended_session="UNKNOWN",
+    )
+    warnings = _build_data_quality_warnings("AMD", md)
+    assert "PREMARKET_UNAVAILABLE" in warnings
+    assert "EXTENDED_HOURS_UNAVAILABLE" in warnings
+
+
+def test_premarket_availability_uses_session_flag_when_present():
+    md = MarketData(
+        symbol="AMD",
+        price=100.0,
+        regular_price=100.0,
+        previous_close=99.0,
+        overnight_reference_price=99.0,
+        volume=1_000_000,
+        provider="yfinance",
+        data_timestamp="2026-08-10T00:00:00Z",
+        premarket_price=None,
+        after_hours_price=None,
+        premarket_volume=None,
+        latest_extended_session="PREMARKET",
+    )
+    result = _analyze_symbol("AMD", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
+    assert result.data_quality.premarket_available is True
+    assert "PREMARKET_UNAVAILABLE" not in result.data_quality.warnings
