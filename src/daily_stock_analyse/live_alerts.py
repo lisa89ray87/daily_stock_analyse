@@ -773,6 +773,8 @@ def _build_live_setup_assessment(
         setup_state = "NO_TRADE"
 
     state_reason = "entry trigger confirmed" if setup_state == "ENTRY_TRIGGERED" else waiting_reason
+    if setup_state == "SETUP_DEVELOPING" and price_confirmed:
+        state_reason = f"trigger confirmed but setup score {final_score} below minimum {min_setup_score}"
     if setup_state == "NO_TRADE":
         state_reason = "insufficient intraday confirmation"
 
@@ -1229,7 +1231,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         return False, "No valid bearish structure", thresholds
 
     if setup_assessment.get("setup_state") != "ENTRY_TRIGGERED":
-        return False, setup_assessment.get("confirmation", "No actionable trigger"), thresholds
+        return False, setup_assessment.get("state_reason") or setup_assessment.get("confirmation", "No actionable trigger"), thresholds
 
     thresholds["confirmation_mode"] = "STRICT" if rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"} else "STANDARD"
     thresholds["setup_state"] = "ENTRY_TRIGGERED"

@@ -13,6 +13,7 @@ from src.daily_stock_analyse.live_alerts import (
     TriggerEvidence,
 )
 from src.daily_stock_analyse.models import BattlePlan, DataQuality, IntelligenceBlock, MarketData, ScoreBreakdown, StockAnalysis
+from src.daily_stock_analyse.telegram_provider import TelegramSendResult
 
 
 def _cfg(*, telegram_enabled: bool = False) -> AppConfig:
@@ -1150,3 +1151,161 @@ def test_v47_waiting_candidate_revalidation_rr_too_low_blocks():
 def test_v47_reliable_rvol_gate_remains_150():
     cfg = _cfg()
     assert abs(cfg.v4_normal_min_rvol - 1.50) < 1e-9
+
+
+def test_normal_phase_rvol_exactly_below_threshold_blocks():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.49
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "RVOL_TOO_LOW"
+
+
+def test_normal_phase_rvol_exactly_at_threshold_allows_alert():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.50
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+    assert state["symbols"]["PLTR"]["volume_lifecycle"]["state"] == "VOLUME_CONFIRMED"
+
+
+def test_normal_phase_rvol_above_threshold_allows_alert():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.60
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ALERT_ELIGIBLE"
+
+
+def test_smci_style_rvol_145_is_below_normal_volume_gate(capsys):
+    cfg = _cfg()
+    state = {"symbols": {"SMCI": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.symbol = "SMCI"
+    a.name = "SMCI"
+    a.market_data.symbol = "SMCI"
+    a.market_data.intraday_rvol = 1.45
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+
+    event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    out = capsys.readouterr().out
+
+    assert event is None
+    assert "RVOL 1.45" in out
+    assert "below volume gate" in out
+    assert state["symbols"]["SMCI"]["last_alert_reason"] == "RVOL_TOO_LOW"
+
+
+def test_confirmed_regular_session_trigger_reaches_telegram_dispatch():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    event = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+
+    assert event is not None
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        send_mock.return_value = TelegramSendResult(success=True, status_code=200)
+        sent = _send_telegram_alerts([event], cfg)
+
+    assert sent == 1
+    assert send_mock.call_count == 1
+
+
+def test_later_blocking_gate_logs_explicit_reason_and_prevents_dispatch(capsys):
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+    a.market_data.intraday_rvol = 1.80
+    a.market_data.intraday_rvol_quality = "RELIABLE"
+    entry = float(a.market_data.price or 0.0)
+    a.battle_plan.target_1 = entry + 0.30
+    a.battle_plan.target_2 = entry + 0.60
+
+    blocked_event = _determine_event(a, state, cfg, now, opening_range_window=False)
+    out = capsys.readouterr().out
+
+    assert blocked_event is None
+    assert "ALERT_BLOCKED | RR_TOO_LOW" in out
+    assert "minimum 1.50" in out
+
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        sent = _send_telegram_alerts([], cfg)
+    assert sent == 0
+    assert send_mock.call_count == 0
+
+
+def test_duplicate_alert_suppression_prevents_second_dispatch_within_cooldown():
+    cfg = _cfg(telegram_enabled=True)
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+
+    first = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert first is not None
+
+    state["symbols"]["PLTR"]["last_alert_type"] = "WAIT_TO_LONG"
+    state["symbols"]["PLTR"]["last_alert_timestamp"] = (now - timedelta(minutes=5)).isoformat()
+
+    second = _determine_event(_triggered_long(), state, cfg, now, opening_range_window=False)
+    assert second is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "COOLDOWN"
+
+    with patch("src.daily_stock_analyse.live_alerts.TelegramBotProvider.send_message") as send_mock:
+        send_mock.return_value = TelegramSendResult(success=True, status_code=200)
+        sent = _send_telegram_alerts([a for a in [first, second] if a is not None], cfg)
+
+    assert sent == 1
+    assert send_mock.call_count == 1
+
+
+def test_confirmed_trigger_below_setup_threshold_returns_explicit_non_eligible_reason():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    a = _triggered_long()
+
+    mocked_assessment = {
+        "components": {},
+        "final_setup_score": 62,
+        "setup_state": "SETUP_DEVELOPING",
+        "trigger": "VWAP reclaim and hold",
+        "confirmation": "VWAP reclaim confirmed",
+        "state_reason": "trigger confirmed but setup score 62 below minimum 70",
+        "vwap_status": "AVAILABLE",
+        "opening_range_status": "AVAILABLE",
+        "trigger_evidence": TriggerEvidence(
+            confirmed=True,
+            direction="LONG",
+            trigger_type="RECLAIM",
+            trigger_price=float(a.market_data.price or 0.0),
+            reference_level=float(a.market_data.vwap or 0.0),
+            current_price=float(a.market_data.price or 0.0),
+            timestamp=now.isoformat(),
+            detail="VWAP reclaim confirmed",
+        ),
+    }
+
+    with patch("src.daily_stock_analyse.live_alerts._build_live_setup_assessment", return_value=mocked_assessment):
+        ok, reason, _ = _is_live_confirmable(a, cfg, opening_range_window=False, now_utc=now)
+
+    assert ok is False
+    assert reason == "trigger confirmed but setup score 62 below minimum 70"
