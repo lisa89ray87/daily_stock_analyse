@@ -120,6 +120,10 @@ def build_ai_overlay_payload(
                 "atr": x.market_data.atr14,
                 "volume": x.market_data.volume,
                 "relative_volume": x.market_data.relative_volume,
+                "intraday_rvol": x.market_data.intraday_rvol,
+                "intraday_rvol_quality": x.market_data.intraday_rvol_quality,
+                "rvol_session": x.market_data.rvol_session,
+                "rvol_context_note": x.market_data.rvol_context_note,
                 "volatility": x.market_data.volatility_20d,
                 "support": x.market_data.support,
                 "resistance": x.market_data.resistance,
@@ -133,6 +137,7 @@ def build_ai_overlay_payload(
                         "direction": c.catalyst_direction,
                         "source": c.source,
                         "published_at": c.published_at,
+                        "url": c.url,
                     }
                     for c in x.intelligence.structured_catalysts
                 ],

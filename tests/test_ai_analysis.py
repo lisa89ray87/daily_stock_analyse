@@ -10,6 +10,7 @@ from src.daily_stock_analyse.ai_providers.base import AIProviderResponse
 from src.daily_stock_analyse.config import AppConfig
 from src.daily_stock_analyse.models import (
     BattlePlan,
+    CatalystEvent,
     DailyAnalysisReport,
     DataQuality,
     IntelligenceBlock,
@@ -155,6 +156,37 @@ def test_ai_payload_structure_is_preserved():
     assert stock["catalyst_status"] == "UNAVAILABLE"
     assert stock["data_quality"] == "UNKNOWN"
     assert stock["data_quality_warnings"] == []
+
+
+def test_ai_payload_includes_clean_catalyst_and_rvol_context():
+    analysis = _analysis()
+    analysis.market_data.intraday_rvol = 1.9
+    analysis.market_data.intraday_rvol_quality = "RELIABLE"
+    analysis.market_data.rvol_session = "REGULAR_SESSION"
+    analysis.market_data.rvol_context_note = "Regular-session intraday RVOL context"
+    analysis.intelligence.structured_catalysts = [
+        CatalystEvent(
+            symbol="AMD",
+            headline="AMD beats earnings and raises guidance",
+            source="Reuters",
+            published_at="2026-08-10T14:00:00+00:00",
+            category="EARNINGS",
+            importance="HIGH",
+            catalyst_direction="BULLISH",
+            url="https://example.com/amd",
+        )
+    ]
+    analysis.intelligence.catalyst_status = "CATALYST_IDENTIFIED"
+
+    payload = build_ai_overlay_payload([analysis], _market_regime())
+    stock = payload["stocks"][0]
+
+    assert stock["intraday_rvol"] == 1.9
+    assert stock["intraday_rvol_quality"] == "RELIABLE"
+    assert stock["rvol_session"] == "REGULAR_SESSION"
+    assert stock["structured_catalysts"][0]["headline"] == "AMD beats earnings and raises guidance"
+    assert stock["structured_catalysts"][0]["source"] == "Reuters"
+    assert stock["structured_catalysts"][0]["url"] == "https://example.com/amd"
 
 
 def _overlay_response(provider: str, parsed: dict) -> AIProviderResponse:

@@ -1,0 +1,43 @@
+name: Neon PostgreSQL Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run targeted validation tests
+        run: |
+          python -m pytest -q \
+            tests/test_market_hours_v3.py \
+            tests/test_live_alerts_v4.py \
+            tests/test_live_provider_selection.py \
+            tests/test_live_workflow_config.py \
+            tests/test_news_catalysts.py \
+            tests/test_ai_analysis.py \
+            tests/test_reporting.py \
+            tests/test_database_config.py \
+            tests/test_postgres_repository.py \
+            tests/test_database_fail_open.py \
+            tests/test_signal_outcomes.py \
+            tests/test_backtest_pipeline.py
+
+      - name: Run Neon smoke validation
+        env:
+          DATABASE_ENABLED: "1"
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python -m src.daily_stock_analyse.database.neon_smoke

@@ -89,6 +89,55 @@ class VolumeLifecycle:
     detail: str
 
 
+@dataclass(frozen=True)
+class LiveSessionPolicy:
+    session_state: str
+    allows_regular_session_triggers: bool
+    allows_opening_range_confirmation: bool
+    allows_vwap_confirmation: bool
+    allows_telegram_trade_entry_alerts: bool
+    allows_regular_session_candle_confirmation: bool
+    reason: str
+
+
+def _live_session_policy(now_utc: datetime, cfg: AppConfig) -> LiveSessionPolicy:
+    session = get_market_session_status(
+        now_utc,
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm=cfg.live_market_open,
+        market_close_hhmm=cfg.live_market_close,
+    )
+    state = session.session_state
+
+    if state == "US_REGULAR":
+        return LiveSessionPolicy(
+            session_state=state,
+            allows_regular_session_triggers=True,
+            allows_opening_range_confirmation=True,
+            allows_vwap_confirmation=True,
+            allows_telegram_trade_entry_alerts=True,
+            allows_regular_session_candle_confirmation=True,
+            reason="Regular-session live trigger engine enabled",
+        )
+
+    if state == "PRE_MARKET":
+        reason = "Regular-session trigger confirmation disabled until the 09:30 ET U.S. open"
+    elif state == "AFTER_HOURS":
+        reason = "Regular-session trigger confirmation disabled after the 16:00 ET U.S. close"
+    else:
+        reason = "Trading triggers are disabled because the U.S. market is closed"
+
+    return LiveSessionPolicy(
+        session_state=state,
+        allows_regular_session_triggers=False,
+        allows_opening_range_confirmation=False,
+        allows_vwap_confirmation=False,
+        allows_telegram_trade_entry_alerts=False,
+        allows_regular_session_candle_confirmation=False,
+        reason=reason,
+    )
+
+
 def run_live_alerts(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     cfg = load_config(repo_root)
@@ -166,6 +215,8 @@ def _run_live_alert_evaluation_cycle(
 ) -> int:
     phase = _v4_session_phase(now, cfg)
     print(f"V4 phase: {phase}")
+    policy = _live_session_policy(now, cfg)
+    print(f"Live session policy | session={policy.session_state} | triggers_enabled={'yes' if policy.allows_regular_session_triggers else 'no'} | reason={policy.reason}")
 
     market_provider = create_market_data_provider(cfg.live_data_provider)
     news_provider = YFinanceNewsProvider()
@@ -201,9 +252,14 @@ def _run_live_alert_evaluation_cycle(
     _write_live_snapshot(
         repo_root,
         {
-            "market_open": True,
+            "market_open": getattr(session, "market_open", session.session_state == "US_REGULAR"),
             "market_reason": session.reason,
             "market_session": session.session_state,
+            "live_session_policy": {
+                "session_state": policy.session_state,
+                "allows_regular_session_triggers": policy.allows_regular_session_triggers,
+                "reason": policy.reason,
+            },
             "v4_phase": phase,
             "opening_range_window": session.opening_range_window,
             "market_time": session.market_now.isoformat(),
@@ -246,25 +302,43 @@ def _v4_session_phase(now_utc: datetime, cfg: AppConfig) -> str:
     return "NORMAL"
 
 
-def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: datetime) -> tuple[str, str]:
+def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: datetime) -> tuple[str, str, str]:
     md = analysis.market_data
+    policy = _live_session_policy(now_utc, cfg)
+    session_label = "REGULAR_SESSION" if policy.session_state == "US_REGULAR" else policy.session_state
+
+    if policy.session_state != "US_REGULAR":
+        if md.intraday_rvol is not None:
+            return (
+                "DATA_LIMITED",
+                f"Regular-session intraday RVOL is stale during {policy.session_state}",
+                session_label,
+            )
+        if md.relative_volume is None:
+            return "UNAVAILABLE", "RVOL missing from provider", session_label
+        return (
+            "DATA_LIMITED",
+            f"Extended-hours volume is not equivalent to regular-session RVOL during {policy.session_state}",
+            session_label,
+        )
+
     if md.intraday_rvol is not None and md.intraday_rvol_quality == "RELIABLE":
-        return "RELIABLE", md.intraday_rvol_note or "Time-normalized intraday RVOL"
+        return "RELIABLE", md.intraday_rvol_note or "Time-normalized intraday RVOL", session_label
 
     if md.intraday_rvol_quality in {"DATA_LIMITED", "UNAVAILABLE"}:
-        return md.intraday_rvol_quality, md.intraday_rvol_note or "Intraday RVOL quality is limited"
+        return md.intraday_rvol_quality, md.intraday_rvol_note or "Intraday RVOL quality is limited", session_label
 
     if md.relative_volume is None:
-        return "UNAVAILABLE", "RVOL missing from provider"
+        return "UNAVAILABLE", "RVOL missing from provider", session_label
 
     if md.volume is None or md.avg_volume_20d is None:
-        return "DATA_LIMITED", "Volume baseline is incomplete"
+        return "DATA_LIMITED", "Volume baseline is incomplete", session_label
 
     ts = _parse_ts(md.intraday_timestamp or md.data_timestamp)
     if ts is None:
-        return "DATA_LIMITED", "Provider timestamp unavailable"
+        return "DATA_LIMITED", "Provider timestamp unavailable", session_label
     if now_utc - ts > timedelta(minutes=20):
-        return "DATA_LIMITED", "Provider timestamp is stale"
+        return "DATA_LIMITED", "Provider timestamp is stale", session_label
 
     market_now = now_utc.astimezone(ZoneInfo(cfg.live_market_timezone))
     session_open = _parse_hhmm(cfg.live_market_open)
@@ -274,9 +348,9 @@ def _classify_rvol_quality(analysis: StockAnalysis, cfg: AppConfig, now_utc: dat
     # yfinance RVOL here uses current daily volume vs full-day 20d average,
     # which is not intraday time-normalized during live market hours.
     if md.provider == "yfinance" and market_session_live:
-        return "DATA_LIMITED", "Daily-vs-20d RVOL baseline is not intraday-normalized"
+        return "DATA_LIMITED", "Daily-vs-20d RVOL baseline is not intraday-normalized", session_label
 
-    return "RELIABLE", "RVOL baseline and timestamp are valid"
+    return "RELIABLE", "RVOL baseline and timestamp are valid", session_label
 
 
 def _intended_direction(analysis: StockAnalysis) -> str:
@@ -488,6 +562,7 @@ def _build_live_setup_assessment(
     cfg: AppConfig,
     phase: str,
     min_setup_score: int,
+    session_policy: LiveSessionPolicy,
     rvol_quality: str,
     rr_ratio: float | None,
 ) -> dict:
@@ -564,7 +639,7 @@ def _build_live_setup_assessment(
     last_low = ctx["last_low"]
     last_high = ctx["last_high"]
 
-    if signal == "LONG" and close is not None:
+    if session_policy.allows_regular_session_triggers and signal == "LONG" and close is not None:
         if resistance is not None and prev_close is not None and prev_close <= resistance < close:
             price_confirmed = True
             trigger = "Breakout above resistance"
@@ -586,7 +661,7 @@ def _build_live_setup_assessment(
                 trigger = "Bullish continuation retest"
                 trigger_reference_level = ctx["ema_fast"]
                 confirmation = "EMA retest continuation confirmed"
-    elif signal == "SHORT" and close is not None:
+    elif session_policy.allows_regular_session_triggers and signal == "SHORT" and close is not None:
         if support is not None and prev_close is not None and prev_close >= support > close:
             price_confirmed = True
             trigger = "Breakdown below support"
@@ -622,7 +697,7 @@ def _build_live_setup_assessment(
 
     vwap_value: float | None = None
     vwap_status = "UNAVAILABLE"
-    if vwap is not None and close is not None:
+    if vwap is not None and close is not None and session_policy.allows_vwap_confirmation:
         vwap_status = "AVAILABLE"
         if signal == "LONG" and close > vwap:
             vwap_value = 10.0
@@ -630,10 +705,12 @@ def _build_live_setup_assessment(
             vwap_value = 10.0
         else:
             vwap_value = 0.0
+    elif vwap is not None and close is not None:
+        vwap_status = "DISABLED_OUTSIDE_US_REGULAR"
 
     opening_range_value: float | None = None
     opening_range_status = "UNAVAILABLE"
-    if or_high is not None and or_low is not None and close is not None:
+    if or_high is not None and or_low is not None and close is not None and session_policy.allows_opening_range_confirmation:
         opening_range_status = "AVAILABLE"
         if signal == "LONG" and close > or_high:
             opening_range_value = 15.0
@@ -645,6 +722,13 @@ def _build_live_setup_assessment(
             opening_range_value = 8.0
         else:
             opening_range_value = 0.0
+    elif or_high is not None and or_low is not None and close is not None:
+        opening_range_status = "DISABLED_OUTSIDE_US_REGULAR"
+
+    if not session_policy.allows_regular_session_triggers and signal in {"LONG", "SHORT"}:
+        waiting_reason = session_policy.reason
+        confirmation = session_policy.reason
+        trigger = f"Regular-session trigger disabled during {session_policy.session_state}"
 
     alignment_value = 5.0 if analysis.market_alignment == "MARKET_ALIGNED" else (2.0 if analysis.market_alignment == "UNKNOWN" else 0.0)
 
@@ -1077,15 +1161,20 @@ def _resolve_volume_lifecycle(symbol_state: dict, rvol: float | None, required_r
 def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_window: bool, now_utc: datetime) -> tuple[bool, str, dict]:
     md = analysis.market_data
     phase = _v4_session_phase(now_utc, cfg)
-    rvol_quality, rvol_quality_reason = _classify_rvol_quality(analysis, cfg, now_utc)
+    session_policy = _live_session_policy(now_utc, cfg)
+    rvol_quality, rvol_quality_reason, rvol_session = _classify_rvol_quality(analysis, cfg, now_utc)
     rvol_value = md.intraday_rvol if md.intraday_rvol is not None else md.relative_volume
 
     thresholds = {
         "min_rvol": cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol,
         "min_setup": cfg.v4_opening_min_setup_score if phase == "OPENING" else cfg.v4_normal_min_setup_score,
         "phase": phase,
+        "session_state": session_policy.session_state,
+        "session_reason": session_policy.reason,
+        "session_triggers_enabled": session_policy.allows_regular_session_triggers,
         "rvol_quality": rvol_quality,
         "rvol_quality_reason": rvol_quality_reason,
+        "rvol_session": rvol_session,
         "rvol": rvol_value,
     }
 
@@ -1105,6 +1194,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         cfg,
         phase,
         thresholds["min_setup"],
+        session_policy,
         rvol_quality=rvol_quality,
         rr_ratio=rr_ratio,
     )
@@ -1121,6 +1211,12 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
             "trigger_evidence": setup_assessment.get("trigger_evidence"),
         }
     )
+
+    if not session_policy.allows_regular_session_triggers:
+        if thresholds.get("setup_state") == "ENTRY_TRIGGERED":
+            thresholds["setup_state"] = "SETUP_DEVELOPING"
+        thresholds["session_gate_blocked"] = True
+        return False, session_policy.reason, thresholds
 
     if analysis.market_alignment != "UNKNOWN" and analysis.market_alignment != "MARKET_ALIGNED":
         return False, "Market alignment filter rejected setup", thresholds
@@ -1504,15 +1600,19 @@ def _determine_event(
     symbol_state.setdefault("position_state", "WATCHING")
 
     phase = _v4_session_phase(now, cfg)
+    session_policy = _live_session_policy(now, cfg)
     min_rvol = cfg.v4_opening_min_rvol if phase == "OPENING" else cfg.v4_normal_min_rvol
-    rvol_quality, _ = _classify_rvol_quality(analysis, cfg, now)
+    rvol_quality, _, rvol_session = _classify_rvol_quality(analysis, cfg, now)
     rvol_value = analysis.market_data.intraday_rvol if analysis.market_data.intraday_rvol is not None else analysis.market_data.relative_volume
     rvol_text = f"{rvol_value:.2f}" if isinstance(rvol_value, (int, float)) else "DATA_LIMITED"
     if rvol_quality == "RELIABLE":
         volume_note = "passed volume gate" if isinstance(rvol_value, (int, float)) and rvol_value >= min_rvol else "below volume gate"
     else:
         volume_note = "evaluating price confirmation"
-    print(f"{analysis.symbol}: {analysis.direction_bias} | Phase {phase} | RVOL {rvol_text} | RVOL {rvol_quality} | {volume_note}")
+    print(
+        f"{analysis.symbol}: session={session_policy.session_state} | {analysis.direction_bias} | Phase {phase} | "
+        f"RVOL {rvol_text} | RVOL {rvol_quality} | RVOL_SESSION {rvol_session} | {volume_note}"
+    )
 
     signal = analysis.signal
     price = analysis.market_data.price
@@ -1561,6 +1661,7 @@ def _determine_event(
             opening_range_window,
         )
         symbol_state["last_setup_state"] = v4.get("setup_state", "NO_TRADE")
+        symbol_state["last_session_state"] = v4.get("session_state", session_policy.session_state)
         if "setup_components" in v4:
             _log_setup_components(analysis.symbol, {"components": v4["setup_components"], "final_setup_score": v4.get("setup_score", 0)})
             print(
@@ -1677,8 +1778,8 @@ def _determine_event(
             else:
                 detail = eligibility.detail or eligibility.reason
                 print(
-                    f"{analysis.symbol}: {analysis.direction_bias} | Phase {v4['phase']} | "
-                    f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | {detail}. No alert generated."
+                    f"{analysis.symbol}: session={v4.get('session_state', session_policy.session_state)} | {analysis.direction_bias} | Phase {v4['phase']} | "
+                    f"RVOL {rvol_text} | RVOL {v4.get('rvol_quality', rvol_quality)} | RVOL_SESSION {v4.get('rvol_session', rvol_session)} | {detail}. No alert generated."
                 )
             return None
 
@@ -1727,6 +1828,7 @@ def _determine_event(
         "price": price,
         "setup_score": eligibility.setup_score if eligibility is not None else v4.get("setup_score", analysis.setup_score),
         "setup_state": v4.get("setup_state", "ENTRY_TRIGGERED"),
+        "session_state": v4.get("session_state", session_policy.session_state),
         "direction_bias": analysis.direction_bias,
         "market_regime": analysis.market_alignment,
         "entry_trigger": eligibility.entry if eligibility is not None else analysis.battle_plan.entry_trigger_price,
@@ -1740,6 +1842,7 @@ def _determine_event(
         "level_unavailable_reason": analysis.battle_plan.level_unavailable_reason,
         "rvol": rvol_value,
         "rvol_quality": v4.get("rvol_quality", rvol_quality),
+        "rvol_session": v4.get("rvol_session", rvol_session),
         "phase": v4["phase"],
         "v4_trigger": v4.get("trigger"),
         "v4_confirmation": v4.get("confirmation"),

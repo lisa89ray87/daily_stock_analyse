@@ -29,6 +29,12 @@ def analyze_symbol(
     md.data_source = md.selected_data_source
     md.quote_timestamp = md.data_timestamp
     md.is_extended_hours = md.selected_price_session in {"PREMARKET", "AFTER_HOURS"}
+    md.rvol_session = "REGULAR_SESSION" if md.live_regular_session else md.session_state
+    md.rvol_context_note = (
+        "Regular-session intraday RVOL context"
+        if md.live_regular_session
+        else f"{md.session_state} volume context is not equivalent to U.S. regular-session RVOL"
+    )
 
     if cfg.enable_news:
         intelligence = news_provider.get_news(symbol)
@@ -122,11 +128,21 @@ def apply_news_lookback(intelligence: IntelligenceBlock, lookback_hours: int) ->
             continue
         if ts >= cutoff:
             filtered.append(item)
+    filtered = _sort_catalysts(filtered)
     intelligence.structured_catalysts = filtered
+    intelligence.facts = [_format_catalyst_fact(x) for x in filtered]
+
+    if not filtered:
+        intelligence.news_available = False
+        intelligence.facts = ["NEWS_UNAVAILABLE"]
+        intelligence.catalyst_status = "NEWS_UNAVAILABLE"
+        intelligence.upcoming_catalysts = ["NEWS_UNAVAILABLE"]
+        return intelligence
+
     material = [x for x in filtered if x.category != "NONE"]
     if material:
         intelligence.catalyst_status = "CATALYST_IDENTIFIED"
-        intelligence.upcoming_catalysts = [f"{x.category} | {x.catalyst_direction} | {x.headline}" for x in material[:3]]
+        intelligence.upcoming_catalysts = [_format_catalyst_summary(x) for x in material[:3]]
     elif intelligence.news_available:
         intelligence.catalyst_status = "NO_MATERIAL_CATALYST"
         intelligence.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
@@ -137,10 +153,45 @@ def collect_daily_catalysts(analyses: list[StockAnalysis]) -> list[CatalystEvent
     items: list[CatalystEvent] = []
     for analysis in analyses:
         for event in analysis.intelligence.structured_catalysts:
-            if event.category == "NONE":
+            if event.category == "NONE" or not event.headline.strip():
                 continue
             items.append(event)
-    return items[:25]
+    return _sort_catalysts(items)[:25]
+
+
+def _importance_rank(importance: str) -> int:
+    return {"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(importance, 0)
+
+
+def _published_sort_value(published_at: str | None) -> float:
+    if not published_at:
+        return 0.0
+    try:
+        return datetime.fromisoformat(published_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _sort_catalysts(items: list[CatalystEvent]) -> list[CatalystEvent]:
+    return sorted(
+        items,
+        key=lambda item: (
+            _importance_rank(item.importance),
+            item.category != "OTHER",
+            _published_sort_value(item.published_at),
+        ),
+        reverse=True,
+    )
+
+
+def _format_catalyst_fact(event: CatalystEvent) -> str:
+    source = event.source or "Unknown"
+    return f"{source}: {event.headline}"
+
+
+def _format_catalyst_summary(event: CatalystEvent) -> str:
+    source = f" | {event.source}" if event.source else ""
+    return f"{event.category} | {event.catalyst_direction}{source} | {event.headline}"
 
 
 def display_name(symbol: str) -> str:

@@ -23,10 +23,14 @@ class CatalystEvent:
         "GUIDANCE",
         "ANALYST",
         "PRODUCT",
+        "PARTNERSHIP",
         "REGULATORY",
-        "M&A",
-        "SECTOR",
+        "LEGAL",
+        "ACQUISITION",
+        "SEMICONDUCTOR",
         "MACRO",
+        "FINANCING",
+        "INSIDER",
         "OTHER",
         "NONE",
     ] = "NONE"
@@ -34,6 +38,7 @@ class CatalystEvent:
     catalyst_direction: Literal["BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"] = "UNKNOWN"
     summary: str = "UNAVAILABLE"
     confidence: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"] = "UNKNOWN"
+    url: str | None = None
 
 
 @dataclass
@@ -90,6 +95,8 @@ class MarketData:
     intraday_rvol: float | None = None
     intraday_rvol_quality: str = "UNAVAILABLE"
     intraday_rvol_note: str | None = None
+    rvol_session: str = "UNKNOWN"
+    rvol_context_note: str | None = None
     data_session: str = "CLOSED"
     data_source: str = "UNAVAILABLE"
     quote_timestamp: str | None = None

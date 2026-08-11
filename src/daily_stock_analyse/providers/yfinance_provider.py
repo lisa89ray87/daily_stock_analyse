@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -193,21 +194,25 @@ class YFinanceNewsProvider(NewsProvider):
             out.catalyst_status = "NEWS_UNAVAILABLE"
             return out
 
-        filtered_items = _filter_news_by_lookback(news, hours=24)
-        candidates = filtered_items[:limit]
+        candidates = _extract_valid_news_items(symbol, news, limit=limit)
+        if not candidates:
+            out.news_available = False
+            out.facts.append("NEWS_UNAVAILABLE")
+            out.interpretation.append("No recent usable provider headlines were available")
+            out.catalyst_status = "NEWS_UNAVAILABLE"
+            out.upcoming_catalysts = ["NEWS_UNAVAILABLE"]
+            return out
 
         for item in candidates:
-            title = item.get("title") or "Untitled"
-            publisher = item.get("publisher") or "Unknown"
-            out.facts.append(f"{publisher}: {title}")
             event = _classify_catalyst(symbol, item)
+            out.facts.append(f"{event.source}: {event.headline}")
             out.structured_catalysts.append(event)
 
         material = [x for x in out.structured_catalysts if x.category != "NONE"]
         if material:
             out.catalyst_status = "CATALYST_IDENTIFIED"
             out.upcoming_catalysts = [
-                f"{x.category} | {x.catalyst_direction} | {x.headline}"
+                f"{x.category} | {x.catalyst_direction} | {x.source} | {x.headline}"
                 for x in material[:3]
             ]
         else:
@@ -218,23 +223,72 @@ class YFinanceNewsProvider(NewsProvider):
         return out
 
 
-def _filter_news_by_lookback(news_items: list[dict], hours: int) -> list[dict]:
-    if hours <= 0:
-        return news_items
-    cutoff = datetime.now(UTC) - timedelta(hours=hours)
-    out: list[dict] = []
+_PLACEHOLDER_TITLES = {"untitled", "unknown", "n/a", "na", "none"}
+_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _extract_valid_news_items(symbol: str, news_items: list[dict], limit: int) -> list[dict]:
+    normalized: list[tuple[int, int, dict]] = []
     for item in news_items:
-        publish_ts = item.get("providerPublishTime")
-        if isinstance(publish_ts, (int, float)):
-            published_at = datetime.fromtimestamp(float(publish_ts), tz=UTC)
-            if published_at < cutoff:
-                continue
-        out.append(item)
-    return out
+        cleaned = _normalize_news_item(item)
+        if cleaned is None:
+            continue
+        title = cleaned["title"]
+        publish_ts = cleaned.get("providerPublishTime")
+        relevance = 1 if symbol.upper() in title.upper() else 0
+        recency = int(publish_ts) if isinstance(publish_ts, (int, float)) else 0
+        normalized.append((relevance, recency, cleaned))
+
+    normalized.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+    return [item for _, _, item in normalized[: max(1, limit)]]
+
+
+def _normalize_news_item(item: dict) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    title = _usable_headline(item.get("title"))
+    if title is None:
+        return None
+
+    publisher = str(item.get("publisher") or "Unknown").strip() or "Unknown"
+    publish_ts = item.get("providerPublishTime")
+    cleaned = {
+        "title": title,
+        "publisher": publisher,
+        "providerPublishTime": publish_ts,
+    }
+
+    url = _safe_news_url(item)
+    if url is not None:
+        cleaned["link"] = url
+    return cleaned
+
+
+def _usable_headline(raw_title) -> str | None:
+    if not isinstance(raw_title, str):
+        return None
+    title = " ".join(raw_title.split()).strip()
+    if not title:
+        return None
+    if title.lower() in _PLACEHOLDER_TITLES:
+        return None
+    return title
+
+
+def _safe_news_url(item: dict) -> str | None:
+    for key in ["link", "canonicalUrl", "clickThroughUrl", "url"]:
+        raw = item.get(key)
+        if isinstance(raw, dict):
+            raw = raw.get("url") or raw.get("link")
+        if isinstance(raw, str):
+            candidate = raw.strip()
+            if _URL_RE.match(candidate):
+                return candidate
+    return None
 
 
 def _classify_catalyst(symbol: str, item: dict) -> CatalystEvent:
-    title = (item.get("title") or "Untitled").strip()
+    title = (item.get("title") or "").strip()
     publisher = (item.get("publisher") or "Unknown").strip()
     publish_ts = item.get("providerPublishTime")
     published_at = None
@@ -246,7 +300,10 @@ def _classify_catalyst(symbol: str, item: dict) -> CatalystEvent:
     direction = "UNKNOWN"
     importance = "LOW"
 
-    if any(k in lower for k in ["fda", "regulator", "investigation", "lawsuit"]):
+    if any(k in lower for k in ["lawsuit", "court", "legal", "settlement", "complaint"]):
+        category = "LEGAL"
+        importance = "HIGH"
+    elif any(k in lower for k in ["fda", "regulator", "investigation", "probe", "sec", "antitrust", "approval"]):
         category = "REGULATORY"
         importance = "HIGH"
     elif any(k in lower for k in ["earnings", "eps", "quarter", "q1", "q2", "q3", "q4"]):
@@ -255,23 +312,35 @@ def _classify_catalyst(symbol: str, item: dict) -> CatalystEvent:
     elif any(k in lower for k in ["guidance", "outlook", "forecast"]):
         category = "GUIDANCE"
         importance = "HIGH"
-    elif any(k in lower for k in ["upgrade", "downgrade", "analyst", "price target"]):
+    elif any(k in lower for k in ["upgrade", "downgrade", "analyst", "price target", "initiated", "reiterated"]):
         category = "ANALYST"
         importance = "MEDIUM"
-    elif any(k in lower for k in ["merger", "acquisition", "buyout", "deal"]):
-        category = "M&A"
+    elif any(k in lower for k in ["partnership", "partner", "collaboration", "joint venture", "agreement"]):
+        category = "PARTNERSHIP"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["merger", "acquisition", "acquire", "buyout", "takeover"]):
+        category = "ACQUISITION"
         importance = "HIGH"
-    elif any(k in lower for k in ["launch", "product", "partnership"]):
+    elif any(k in lower for k in ["launch", "product", "release", "platform", "gpu", "cpu"]):
         category = "PRODUCT"
         importance = "MEDIUM"
-    elif any(k in lower for k in ["sector", "industry", "chip", "semiconductor", "macro", "fed", "inflation"]):
-        category = "SECTOR"
+    elif any(k in lower for k in ["offering", "financing", "debt", "notes", "capital raise", "share sale"]):
+        category = "FINANCING"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["insider", "ceo sells", "director buys", "insider buying", "insider selling"]):
+        category = "INSIDER"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["sector", "industry", "chip stock", "semiconductor", "memory market", "foundry"]):
+        category = "SEMICONDUCTOR"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["macro", "fed", "inflation", "rates", "tariff", "economy", "recession"]):
+        category = "MACRO"
         importance = "MEDIUM"
     elif title:
         category = "OTHER"
 
-    bullish_terms = ["beat", "raise", "upgrade", "surge", "growth", "win", "strong"]
-    bearish_terms = ["miss", "cut", "downgrade", "lawsuit", "probe", "fall", "weak"]
+    bullish_terms = ["beat", "raise", "upgrade", "surge", "growth", "win", "strong", "record", "approval"]
+    bearish_terms = ["miss", "cut", "downgrade", "lawsuit", "probe", "fall", "weak", "delay", "recall"]
     if any(k in lower for k in bullish_terms) and not any(k in lower for k in bearish_terms):
         direction = "BULLISH"
     elif any(k in lower for k in bearish_terms) and not any(k in lower for k in bullish_terms):
@@ -291,6 +360,7 @@ def _classify_catalyst(symbol: str, item: dict) -> CatalystEvent:
         catalyst_direction=direction,
         summary=title,
         confidence="MEDIUM" if category not in {"NONE", "OTHER"} else "LOW",
+        url=_safe_news_url(item),
     )
 
 

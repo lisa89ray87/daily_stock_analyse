@@ -426,6 +426,8 @@
                 <th>Category</th>
                 <th>Direction</th>
                 <th>Importance</th>
+                <th>Source</th>
+                <th>Published</th>
                 <th>Headline</th>
               </tr>
             </thead>
@@ -436,7 +438,9 @@
                 <td>{{ item.category }}</td>
                 <td>{{ item.catalyst_direction }}</td>
                 <td>{{ item.importance }}</td>
-                <td>{{ item.headline }}</td>
+                <td>{{ item.source or 'Unknown' }}</td>
+                <td>{{ item.published_at or 'UNAVAILABLE' }}</td>
+                <td>{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noreferrer">{{ item.headline }}</a>{% else %}{{ item.headline }}{% endif %}</td>
               </tr>
               {% endfor %}
             </tbody>

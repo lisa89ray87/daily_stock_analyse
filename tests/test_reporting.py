@@ -3,6 +3,7 @@ from pathlib import Path
 
 from src.daily_stock_analyse.models import (
     BattlePlan,
+    CatalystEvent,
     DailyAnalysisReport,
     DataQuality,
     IntelligenceBlock,
@@ -236,4 +237,29 @@ def test_reporting_renders_variable_number_of_analysis_symbols():
     assert "AMAT" in html9
     assert "PANW" in html9
     assert "DDOG" in html9
+
+
+def test_reporting_renders_real_catalyst_metadata_without_untitled_placeholder():
+    report = _sample_report()
+    report.news_catalysts = [
+        CatalystEvent(
+            symbol="AMD",
+            headline="AMD beats earnings and raises guidance",
+            source="Reuters",
+            published_at="2026-08-10T14:00:00+00:00",
+            category="EARNINGS",
+            importance="HIGH",
+            catalyst_direction="BULLISH",
+            url="https://example.com/amd",
+        )
+    ]
+
+    markdown = render_markdown(report)
+    html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
+
+    assert "AMD | EARNINGS | BULLISH | HIGH | Reuters" in markdown
+    assert "Untitled" not in markdown
+    assert "Reuters" in html
+    assert "AMD beats earnings and raises guidance" in html
+    assert "https://example.com/amd" in html
 

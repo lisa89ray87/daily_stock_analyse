@@ -47,3 +47,19 @@ def test_daily_workflow_supports_dynamic_analysis_symbol_variables():
     assert 'ANALYSIS_SYMBOLS: ${{ vars.ANALYSIS_SYMBOLS }}' in wf
     assert 'MAX_ANALYSIS_SYMBOLS: ${{ vars.MAX_ANALYSIS_SYMBOLS }}' in wf
     assert 'FIXED_SIX_SYMBOLS: ${{ vars.FIXED_SIX_SYMBOLS }}' in wf
+
+
+def test_daily_workflow_maps_neon_secret_to_database_url():
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "daily_stock_analysis.yml").read_text(encoding="utf-8")
+
+    assert 'DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}' in wf
+    assert 'DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}' in wf
+
+
+def test_neon_validation_workflow_is_manual_and_uses_secret_url():
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "neon_postgres_validation.yml").read_text(encoding="utf-8")
+
+    assert 'workflow_dispatch:' in wf
+    assert 'DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}' in wf
+    assert 'DATABASE_ENABLED: "1"' in wf
+    assert 'python -m src.daily_stock_analyse.database.neon_smoke' in wf

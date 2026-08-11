@@ -65,7 +65,8 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
             f"REGULAR={_fmt(md.regular_price)}, PREMARKET={_fmt(md.premarket_price)}, AFTER_HOURS={_fmt(md.after_hours_price)}, "
             f"LATEST_EXT={_fmt(md.latest_extended_price)} ({md.latest_extended_session}), "
             f"gap_pct={_fmt(md.gap_pct)}, premarket_change_pct={_fmt(md.premarket_change_pct)}, "
-            f"premarket_volume={_fmt(md.premarket_volume)}, rel_vol={_fmt(md.relative_volume)}, timestamp={md.data_timestamp or 'UNAVAILABLE'}"
+            f"premarket_volume={_fmt(md.premarket_volume)}, rel_vol={_fmt(md.relative_volume)}, intraday_rvol={_fmt(md.intraday_rvol)}, "
+            f"rvol_session={md.rvol_session}, timestamp={md.data_timestamp or 'UNAVAILABLE'}"
         )
 
     lines.append("\n## Core Conclusion")
@@ -86,8 +87,10 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append("\n## News And Catalysts")
     if report.news_catalysts:
         for item in report.news_catalysts:
+            source = item.source or "Unknown"
+            published = item.published_at or "UNAVAILABLE"
             lines.append(
-                f"- {item.symbol} | {item.category} | {item.catalyst_direction} | {item.importance} | {item.headline}"
+                f"- {item.symbol} | {item.category} | {item.catalyst_direction} | {item.importance} | {source} | {published} | {item.headline}"
             )
     else:
         lines.append("- NO_MATERIAL_CATALYST")

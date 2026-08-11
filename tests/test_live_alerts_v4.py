@@ -618,6 +618,83 @@ def test_reference_level_consistency():
     assert evidence.reference_level is not None
 
 
+def test_pre_market_cannot_generate_entry_triggered_event():
+    cfg = _cfg(telegram_enabled=True)
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 10, 33, tzinfo=UTC)
+    analysis = _triggered_long()
+
+    ok, reason, meta = _is_live_confirmable(analysis, cfg, opening_range_window=False, now_utc=now)
+    event = _determine_event(analysis, state, cfg, now, opening_range_window=False)
+
+    assert ok is False
+    assert meta["session_state"] == "PRE_MARKET"
+    assert meta["session_gate_blocked"] is True
+    assert meta["setup_state"] != "ENTRY_TRIGGERED"
+    assert meta["opening_range_status"] == "DISABLED_OUTSIDE_US_REGULAR"
+    assert meta["vwap_status"] == "DISABLED_OUTSIDE_US_REGULAR"
+    assert "disabled" in reason.lower()
+    assert event is None
+    assert state["symbols"]["PLTR"]["last_alert_reason"] == "ENTRY_NOT_CONFIRMED"
+
+
+def test_after_hours_cannot_generate_entry_triggered_event():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 22, 30, tzinfo=UTC)
+    analysis = _triggered_long()
+
+    ok, _, meta = _is_live_confirmable(analysis, cfg, opening_range_window=False, now_utc=now)
+    event = _determine_event(analysis, state, cfg, now, opening_range_window=False)
+
+    assert ok is False
+    assert meta["session_state"] == "AFTER_HOURS"
+    assert meta["session_gate_blocked"] is True
+    assert meta["setup_state"] != "ENTRY_TRIGGERED"
+    assert event is None
+
+
+def test_closed_cannot_generate_entry_triggered_event():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 9, 15, 0, tzinfo=UTC)
+    analysis = _triggered_long()
+
+    ok, reason, meta = _is_live_confirmable(analysis, cfg, opening_range_window=False, now_utc=now)
+    event = _determine_event(analysis, state, cfg, now, opening_range_window=False)
+
+    assert ok is False
+    assert meta["session_state"] == "CLOSED"
+    assert meta["session_gate_blocked"] is True
+    assert meta["setup_state"] != "ENTRY_TRIGGERED"
+    assert "market is closed" in reason.lower()
+    assert event is None
+
+
+def test_us_regular_still_allows_entry_triggered_event():
+    cfg = _cfg()
+    state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
+    now = datetime(2026, 8, 10, 14, 5, tzinfo=UTC)
+    analysis = _triggered_long()
+
+    ok, _, meta = _is_live_confirmable(analysis, cfg, opening_range_window=False, now_utc=now)
+    event = _determine_event(analysis, state, cfg, now, opening_range_window=False)
+
+    assert ok is True
+    assert meta["session_state"] == "US_REGULAR"
+    assert meta.get("session_gate_blocked") is not True
+    assert event is not None
+    assert event["event_type"] == "WAIT_TO_LONG"
+
+
+def test_premarket_rvol_is_not_labeled_as_regular_session_reliable():
+    cfg = _cfg()
+    now = datetime(2026, 8, 10, 10, 33, tzinfo=UTC)
+    _, _, meta = _is_live_confirmable(_triggered_long(), cfg, opening_range_window=False, now_utc=now)
+    assert meta["rvol_session"] == "PRE_MARKET"
+    assert meta["rvol_quality"] == "DATA_LIMITED"
+
+
 def test_valid_trigger_and_levels_and_rr_is_alert_eligible():
     cfg = _cfg()
     state = {"symbols": {"PLTR": {"last_signal": "WAIT"}}}
