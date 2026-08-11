@@ -37,8 +37,43 @@ class SearXNGNewsProvider(NewsProvider):
         self._use_public_instances = bool(use_public_instances and not self._base_urls)
         self._cursor = 0
         self._cursor_lock = Lock()
+        self._diagnostic_lock = Lock()
+        self._diagnostic = {
+            "selected_instance": "NONE",
+            "http_status": "NONE",
+            "raw_result_count": 0,
+            "parsed_result_count": 0,
+        }
+
+    def _reset_diagnostic(self) -> None:
+        with self._diagnostic_lock:
+            self._diagnostic = {
+                "selected_instance": "NONE",
+                "http_status": "NONE",
+                "raw_result_count": 0,
+                "parsed_result_count": 0,
+            }
+
+    def diagnostic_snapshot(self) -> dict[str, object]:
+        with self._diagnostic_lock:
+            return dict(self._diagnostic)
+
+    def _record_request_diagnostic(
+        self,
+        *,
+        instance: str,
+        http_status: int | str,
+        raw_result_count: int = 0,
+        parsed_result_count: int = 0,
+    ) -> None:
+        with self._diagnostic_lock:
+            self._diagnostic["selected_instance"] = instance
+            self._diagnostic["http_status"] = http_status
+            self._diagnostic["raw_result_count"] = int(self._diagnostic["raw_result_count"]) + raw_result_count
+            self._diagnostic["parsed_result_count"] = int(self._diagnostic["parsed_result_count"]) + parsed_result_count
 
     def get_news(self, symbol: str, limit: int = 5) -> IntelligenceBlock:
+        self._reset_diagnostic()
         out = IntelligenceBlock()
         out.catalyst_status = "UNAVAILABLE"
 
@@ -132,22 +167,27 @@ class SearXNGNewsProvider(NewsProvider):
 
         try:
             response = requests.get(url, params=params, timeout=self._timeout_seconds)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            self._record_request_diagnostic(instance=base_url, http_status=f"REQUEST_ERROR:{exc.__class__.__name__}")
             return []
 
         if response.status_code != 200:
+            self._record_request_diagnostic(instance=base_url, http_status=response.status_code)
             return []
 
         try:
             data = response.json()
         except ValueError:
+            self._record_request_diagnostic(instance=base_url, http_status=response.status_code)
             return []
 
         if not isinstance(data, dict):
+            self._record_request_diagnostic(instance=base_url, http_status=response.status_code)
             return []
 
         raw = data.get("results", [])
         if not isinstance(raw, list):
+            self._record_request_diagnostic(instance=base_url, http_status=response.status_code)
             return []
 
         out: list[dict] = []
@@ -161,6 +201,13 @@ class SearXNGNewsProvider(NewsProvider):
             out.append(item)
             if len(out) >= limit:
                 break
+
+        self._record_request_diagnostic(
+            instance=base_url,
+            http_status=response.status_code,
+            raw_result_count=len(raw),
+            parsed_result_count=len(out),
+        )
         return out
 
     def _to_event(self, symbol: str, item: dict) -> CatalystEvent | None:
