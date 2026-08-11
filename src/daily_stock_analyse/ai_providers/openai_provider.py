@@ -8,6 +8,7 @@ from .base import AIOverlayProvider, AIProviderError, AIProviderResponse, OVERLA
 class OpenAIOverlayProvider(AIOverlayProvider):
     provider_name = "openai"
     model_name = "gpt-5-mini"
+    request_timeout_seconds = 30.0
 
     def __init__(self, api_key: str | None):
         self.api_key = api_key
@@ -30,7 +31,14 @@ class OpenAIOverlayProvider(AIOverlayProvider):
             )
 
         try:
-            client = OpenAI(api_key=self.api_key)
+            # Bound both the HTTP request and SDK retries so a quota/rate-limit
+            # failure can hand off to the configured fallback promptly instead
+            # of consuming the workflow's long default retry/timeout window.
+            client = OpenAI(
+                api_key=self.api_key,
+                timeout=self.request_timeout_seconds,
+                max_retries=0,
+            )
             response = client.responses.create(
                 model=self.model_name,
                 input=[
