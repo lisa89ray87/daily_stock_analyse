@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,13 +81,83 @@ def _message(events: list[EventAlert], market_time: str) -> str:
     return "\n".join(lines)
 
 
+def _evaluate_symbol(symbol: str, provider, cfg) -> tuple[str, list[EventAlert], str | None]:
+    """Fetch market data and detect events for one symbol in a worker thread."""
+    print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=start", flush=True)
+    try:
+        print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_start", flush=True)
+        md = provider.get_market_data(symbol)
+        print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_complete", flush=True)
+        analysis = SimpleNamespace(symbol=symbol, market_data=md)
+        events = detect_event_alerts(analysis, cfg)
+        print(
+            f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)}",
+            flush=True,
+        )
+        return symbol, events, None
+    except Exception as exc:
+        error = repr(exc)
+        print(f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={error}", flush=True)
+        return symbol, [], error
+
+
+def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_workers: int) -> tuple[list[EventAlert], int, int]:
+    """Evaluate symbols concurrently with a bounded worker pool.
+
+    The worker pool only parallelizes market-data retrieval and event detection.
+    Cooldown filtering, Telegram delivery, and state writes remain serialized in
+    the main thread so alert behavior is unchanged.
+    """
+    worker_count = min(max(1, max_workers), max(1, len(symbols)))
+    print(
+        f"EVENT_ALERT_CONCURRENCY | stage=start | symbols={len(symbols)} | max_workers={worker_count}",
+        flush=True,
+    )
+
+    results: dict[str, list[EventAlert]] = {}
+    errors = 0
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="event-alert") as executor:
+        futures = {executor.submit(_evaluate_symbol, symbol, provider, cfg): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                result_symbol, events, error = future.result()
+            except Exception as exc:
+                result_symbol, events, error = symbol, [], repr(exc)
+                print(
+                    f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={error}",
+                    flush=True,
+                )
+            results[result_symbol] = events
+            if error is not None:
+                errors += 1
+
+    pending_events: list[EventAlert] = []
+    detected = 0
+    for symbol in symbols:
+        events = results.get(symbol, [])
+        detected += len(events)
+        pending_events.extend(events)
+
+    print(
+        f"EVENT_ALERT_CONCURRENCY | stage=complete | detected={detected} | errors={errors}",
+        flush=True,
+    )
+    return pending_events, detected, errors
+
+
 def run_event_alerts(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     _startup("begin", repo_root=repo_root)
 
     try:
         cfg = load_config(repo_root)
-        _startup("config", live_provider=cfg.live_data_provider, timezone=cfg.live_market_timezone)
+        _startup(
+            "config",
+            live_provider=cfg.live_data_provider,
+            timezone=cfg.live_market_timezone,
+            max_workers=cfg.event_alert_max_workers,
+        )
     except Exception as exc:
         _startup("config", "ERROR", error=repr(exc))
         raise
@@ -132,6 +203,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     print(f"Evaluation interval: {interval} minutes", flush=True)
     print(f"Event cooldown: {cooldown} minutes", flush=True)
     print(f"Symbols: {len(symbols)}", flush=True)
+    print(f"Max concurrent workers: {cfg.event_alert_max_workers}", flush=True)
     _startup("ready")
 
     cycle = 0
@@ -163,31 +235,25 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             time.sleep(interval * 60)
             continue
 
+        detected_events, detected, errors = _evaluate_symbols_concurrently(
+            symbols,
+            provider,
+            cfg,
+            cfg.event_alert_max_workers,
+        )
+
         pending: list[EventAlert] = []
-        detected = 0
         suppressed = 0
-        for symbol in symbols:
-            print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=start", flush=True)
-            try:
-                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_start", flush=True)
-                md = provider.get_market_data(symbol)
-                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_complete", flush=True)
-                analysis = SimpleNamespace(symbol=symbol, market_data=md)
-                events = detect_event_alerts(analysis, cfg)
-                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)}", flush=True)
-                detected += len(events)
-                for event in events:
-                    if _is_suppressed(state, event, now, cooldown):
-                        suppressed += 1
-                        continue
-                    pending.append(event)
-            except Exception as exc:
-                print(f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={exc}", flush=True)
+        for event in detected_events:
+            if _is_suppressed(state, event, now, cooldown):
+                suppressed += 1
+                continue
+            pending.append(event)
 
         print(
             f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | "
             f"pending={len(pending)} | cooldown_suppressed={suppressed} | "
-            f"telegram_configured={telegram.is_configured}",
+            f"symbol_errors={errors} | telegram_configured={telegram.is_configured}",
             flush=True,
         )
 
