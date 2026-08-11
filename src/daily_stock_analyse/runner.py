@@ -40,7 +40,10 @@ def run_analysis(base_path: Path | None = None) -> int:
     )
 
     market_provider = create_market_data_provider(cfg.data_provider)
-    news_provider = create_news_provider(cfg.news_provider)
+    news_provider = create_news_provider(
+        cfg.news_provider,
+        news_max_age_hours=cfg.news_max_age_hours,
+    )
 
     market_regime = build_market_regime()
     sector_strength = market_regime.indicators.get("semiconductor_etf_change_pct")
@@ -118,36 +121,23 @@ def run_analysis(base_path: Path | None = None) -> int:
                     cfg.signal_expiry_hours,
                     session.session_state,
                     _report_data_source(selected_analyses, session.session_state),
-                    ai_overlay.get("provider") if isinstance(ai_overlay, dict) else None,
                 )
-                lifecycle_notes.append("Signal lifecycle database: PostgreSQL")
-                lifecycle_notes.append(f"Signals persisted this run: {persisted}")
-
-                if cfg.enable_outcome_tracking:
-                    open_rows = store.open_signals()
-                    latest_prices = {item.symbol: item.market_data.price for item in selected_analyses}
-                    updates = evaluate_signal_outcomes(open_rows, latest_prices, generated_at_utc)
-                    updated_rows = store.apply_outcome_updates(updates, generated_at_utc)
-                    lifecycle_notes.append(f"Signal outcomes updated: {updated_rows}")
-
-                if cfg.enable_backtest:
-                    backtest_rows = store.load_backtest_rows(limit=5000)
-                    historical_performance = summarize_backtest(backtest_rows)
+                lifecycle_notes.append(f"Persisted {persisted} signals")
+                outcome = evaluate_signal_outcomes(store, generated_at_utc)
+                historical_performance = outcome
+                lifecycle_notes.append(f"Outcome tracking: {outcome.get('evaluated', 0)} evaluated")
             except Exception as exc:
-                lifecycle_notes.append(f"Signal lifecycle disabled for this run: {exc.__class__.__name__}")
+                lifecycle_notes.append(f"Signal lifecycle error: {exc}")
 
     report = DailyAnalysisReport(
         generated_at_utc=generated_at_utc,
-        generated_at_malaysia=generated_at_my.strftime("%Y-%m-%d %H:%M %Z"),
-        next_us_market_open_malaysia=next_open_my.strftime("%Y-%m-%d %H:%M %Z"),
-        session_label="Morning research report",
-        market_data_session=session.session_state,
-        latest_data_source=_report_data_source(selected_analyses, session.session_state),
-        live_regular_session=session.session_state == "US_REGULAR",
+        generated_at_malaysia=generated_at_my.isoformat(),
+        next_us_market_open_malaysia=next_open_my,
+        session_label=session.session_state,
         fixed_symbols=cfg.fixed_watchlist,
         dynamic_symbols=[x.symbol for x in dynamic],
         market_regime=market_regime,
-        analyses=selected_analyses,
+        analyses=analyses,
         day_trading_watchlist=day_trade_watchlist,
         top3_bullish=bullish_ranked,
         top3_bearish=bearish_ranked,
@@ -156,144 +146,122 @@ def run_analysis(base_path: Path | None = None) -> int:
         closest_long_candidate=closest_long,
         closest_short_candidate=closest_short,
         best_overall=best_overall,
-        notes=errors + lifecycle_notes,
+        notes=errors + lifecycle_notes + ai_overlay.notes,
+        market_data_session=session.session_state,
+        latest_data_source=_report_data_source(selected_analyses, session.session_state),
+        live_regular_session=session.session_state == "US_REGULAR",
         news_catalysts=daily_catalysts,
         historical_performance=historical_performance,
     )
 
-    output_dir = repo_root / "artifacts"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    md = render_markdown(report, ai_overlay)
-    html = render_html(report, repo_root / "templates", ai_overlay)
-    (output_dir / "daily_stock_analysis.md").write_text(md, encoding="utf-8")
-    (output_dir / "daily_stock_analysis.html").write_text(html, encoding="utf-8")
-    (output_dir / "daily_stock_analysis.json").write_text(json.dumps(asdict(report), default=str, indent=2), encoding="utf-8")
+    artifacts = repo_root / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "daily_stock_analysis.json").write_text(
+        json.dumps(asdict(report), indent=2, default=str), encoding="utf-8"
+    )
+    (artifacts / "daily_stock_analysis.md").write_text(render_markdown(report), encoding="utf-8")
+    (artifacts / "daily_stock_analysis.html").write_text(render_html(report), encoding="utf-8")
 
-    email_sent = False
+    print(f"Report generated at {artifacts}")
+    if errors:
+        print("Analysis warnings:")
+        for error in errors:
+            print(f" - {error}")
+
     if cfg.send_email:
-        if not cfg.resend_api_key or not cfg.email_from:
-            raise RuntimeError("Email enabled but RESEND_API_KEY or EMAIL_FROM is missing")
-        provider = ResendEmailProvider(cfg.resend_api_key)
-        payload = EmailPayload(
-            subject="Daily Stock Analysis - Morning Report",
-            html=html,
+        email = ResendEmailProvider(
+            api_key=cfg.resend_api_key,
             sender=cfg.email_from,
             recipient=cfg.email_to,
         )
-        provider.send_html(payload)
-        email_sent = True
-
-    print(f"Report generated at {output_dir}")
-    print(f"Email sent: {email_sent}")
-    if errors:
-        print("Completed with partial data errors:")
-        for err in errors:
-            print(f"- {err}")
+        payload = EmailPayload(
+            subject=f"Daily Stock Analysis — {generated_at_my.strftime('%Y-%m-%d %H:%M %Z')}",
+            html=(artifacts / "daily_stock_analysis.html").read_text(encoding="utf-8"),
+        )
+        result = email.send(payload)
+        print(f"Email sent: {result.success}")
     return 0
 
 
-def _analyze_symbol(symbol, cfg, regime_label, sector_strength, market_provider, news_provider, now_utc=None):
-    return analyze_symbol(symbol, cfg, regime_label, sector_strength, market_provider, news_provider, now_utc=now_utc)
+def _report_data_source(analyses: list[StockAnalysis], session: str) -> str:
+    sources = sorted({
+        a.market_data.selected_data_source
+        for a in analyses
+        if a.market_data.selected_data_source and a.market_data.selected_data_source != "UNAVAILABLE"
+    })
+    if not sources:
+        return "UNAVAILABLE"
+    return ", ".join(sources)
 
 
-def _report_data_source(analyses, session_state: str) -> str:
-    if session_state == "US_REGULAR":
-        return "Live / Intraday Regular Session"
-    data_sources = {x.market_data.selected_data_source for x in analyses if x.market_data.selected_data_source != "UNAVAILABLE"}
-    if len(data_sources) == 1:
-        return next(iter(data_sources))
-    if any(x.market_data.extended_hours_used for x in analyses):
-        return "24-Hour / Extended Hours"
-    return "UNAVAILABLE"
+def _best_for_direction(analyses: list[StockAnalysis], direction: str) -> tuple[str, str]:
+    if not analyses:
+        return "UNAVAILABLE", "UNAVAILABLE"
+    ranked = sorted(
+        analyses,
+        key=lambda x: x.score.long_score if direction == "LONG" else x.score.short_score,
+        reverse=True,
+    )
+    best = ranked[0]
+    return display_name(best.symbol), f"{display_name(best.symbol)} ({best.setup_score}/100)"
 
 
-def _apply_news_lookback(intelligence: IntelligenceBlock, lookback_hours: int) -> IntelligenceBlock:
-    return apply_news_lookback(intelligence, lookback_hours)
-
-
-def _collect_daily_catalysts(analyses):
-    return collect_daily_catalysts(analyses)
-
-
-def _display_name(symbol: str) -> str:
-    return display_name(symbol)
-
-
-def _has_premarket_data(md) -> bool:
-    return md.premarket_price is not None or md.latest_extended_session == "PREMARKET"
-
-
-def _has_after_hours_data(md) -> bool:
-    return md.after_hours_price is not None or md.latest_extended_session == "AFTER_HOURS"
-
-
-def _has_usable_selected_price(md) -> bool:
-    return md.price is not None and md.selected_data_source != "UNAVAILABLE"
-
-
-def _build_data_quality_warnings(symbol: str, md) -> list[str]:
-    return build_data_quality_warnings(symbol, md)
-
-
-def _build_battle_plan(md, signal: str) -> BattlePlan:
-    return build_battle_plan(md, signal)
+def _best_overall(analyses: list[StockAnalysis]) -> str:
+    if not analyses:
+        return "UNAVAILABLE"
+    best = max(analyses, key=lambda x: x.setup_score)
+    return display_name(best.symbol)
 
 
 def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
-    md = create_market_data_provider("yfinance").get_market_data(symbol)
-    intel = IntelligenceBlock(
-        facts=["Data unavailable for this symbol"],
-        interpretation=[reason],
-        upcoming_catalysts=[],
+    md = MarketData(symbol=symbol)
+    intelligence = IntelligenceBlock(
+        facts=[reason],
+        interpretation=["Analysis unavailable"],
+        upcoming_catalysts=["UNAVAILABLE"],
         news_available=False,
+        catalyst_status="UNAVAILABLE",
     )
+    quality = DataQuality(
+        price_available=False,
+        intraday_available=False,
+        premarket_available=False,
+        volume_available=False,
+        timestamp_available=False,
+        provider="unavailable",
+        warnings=[reason],
+    )
+    score = ScoreBreakdown(total=0, long_score=0, short_score=0, components={}, weights={})
     battle = BattlePlan(
-        bullish_scenario="UNAVAILABLE", bearish_scenario="UNAVAILABLE", key_support="UNAVAILABLE",
-        key_resistance="UNAVAILABLE", entry_area="NO_TRADE", target_area="NO_TRADE",
-        invalidation="UNAVAILABLE", risk_reward_assessment="UNAVAILABLE",
-    )
-    from .models import ScoreBreakdown
-    score = ScoreBreakdown(total=0.0, long_score=0.0, short_score=0.0, components={}, weights={})
-    dq = DataQuality(
-        price_available=False, intraday_available=False, premarket_available=False,
-        volume_available=False, timestamp_available=md.data_timestamp is not None,
-        provider=md.provider, warnings=["STALE_DATA"],
+        bullish_scenario="UNAVAILABLE",
+        bearish_scenario="UNAVAILABLE",
+        key_support="UNAVAILABLE",
+        key_resistance="UNAVAILABLE",
+        entry_area="UNAVAILABLE",
+        target_area="UNAVAILABLE",
+        invalidation="UNAVAILABLE",
+        risk_reward_assessment="UNAVAILABLE",
     )
     return StockAnalysis(
-        symbol=symbol, name=_display_name(symbol), signal="NO_TRADE", trading_horizon="NO_TRADE",
-        direction_bias="NEUTRAL", market_alignment="UNKNOWN", setup_score=0, day_trade_candidate=False,
-        candidate_score=0, candidate_status="NO DAY-TRADE CANDIDATES", confirmation_needed="Data unavailable",
-        confidence="LOW", one_liner="Insufficient data", main_reason=reason, risk_classification="UNKNOWN",
-        market_data=md, intelligence=intel, battle_plan=battle, score=score, data_quality=dq,
-        source_flags={"market_data_available": False, "news_available": False},
+        symbol=symbol,
+        name=display_name(symbol),
+        signal="NO_TRADE",
+        trading_horizon="NO_TRADE",
+        direction_bias="NEUTRAL",
+        market_alignment="UNKNOWN",
+        setup_score=0,
+        day_trade_candidate=False,
+        candidate_score=0,
+        candidate_status="UNAVAILABLE",
+        confirmation_needed=reason,
+        confidence="LOW",
+        one_liner=reason,
+        main_reason=reason,
+        risk_classification="UNKNOWN",
+        market_data=md,
+        intelligence=intelligence,
+        battle_plan=battle,
+        score=score,
+        data_quality=quality,
+        source_flags={},
     )
-
-
-def _best_for_direction(analyses, direction: str):
-    confirmed = [x for x in analyses if x.signal == direction]
-    if confirmed:
-        best = sorted(confirmed, key=lambda x: (x.setup_score, x.candidate_score), reverse=True)[0]
-        return (
-            f"{best.symbol} | Bias: {best.direction_bias} | Status: {best.signal} | Reason: {best.main_reason}",
-            "NONE",
-        )
-    closest_bias = [x for x in analyses if x.direction_bias == f"{direction}_BIAS"]
-    if not closest_bias:
-        return "NONE", "NONE"
-    closest = sorted(closest_bias, key=lambda x: (x.candidate_score, x.setup_score), reverse=True)[0]
-    return (
-        "NONE",
-        f"{closest.symbol} | Bias: {closest.direction_bias} | Status: {closest.signal} | Reason: {closest.main_reason}",
-    )
-
-
-def _best_overall(analyses) -> str:
-    eligible = [x for x in analyses if x.day_trade_candidate or x.signal in {"LONG", "SHORT"}]
-    if not eligible:
-        return "NO HIGH-CONVICTION SETUP"
-    best = sorted(eligible, key=lambda x: (x.candidate_score, x.setup_score), reverse=True)[0]
-    return f"{best.symbol} | Bias: {best.direction_bias} | Status: {best.signal}"
-
-
-def main() -> int:
-    return run_analysis()
