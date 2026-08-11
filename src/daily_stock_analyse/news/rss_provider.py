@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote_plus
@@ -8,9 +9,26 @@ from xml.etree import ElementTree
 
 import requests
 
-from ..models import IntelligenceBlock
+from ..models import CatalystEvent, IntelligenceBlock
 from ..providers.base import NewsProvider
 from ..providers.yfinance_provider import _classify_catalyst
+
+
+_LOW_QUALITY_SOURCE_PATTERNS = (
+    "mshale",
+    "mexc",
+    "stockinvest",
+    "marketbeat",
+    "gurufocus",
+    "chartmill",
+    "tradingkey",
+    "ts2.tech",
+)
+
+_ACTIONABLE_CATEGORIES = {
+    "EARNINGS", "GUIDANCE", "ANALYST", "PRODUCT", "PARTNERSHIP",
+    "REGULATORY", "LEGAL", "ACQUISITION", "FINANCING", "INSIDER",
+}
 
 
 class RSSNewsProvider(NewsProvider):
@@ -27,6 +45,9 @@ class RSSNewsProvider(NewsProvider):
             "request_url": url,
             "http_status": "UNAVAILABLE",
             "raw_result_count": 0,
+            "candidate_result_count": 0,
+            "relevant_result_count": 0,
+            "quality_filtered_count": 0,
             "parsed_result_count": 0,
         }
         try:
@@ -57,17 +78,35 @@ class RSSNewsProvider(NewsProvider):
             pub_date = _text(item.find("pubDate"))
             if not title:
                 continue
-            candidates.append(
-                {
-                    "title": title,
-                    "publisher": source,
-                    "providerPublishTime": _parse_rss_timestamp(pub_date),
-                    "link": link,
-                }
-            )
+            candidates.append({
+                "title": title,
+                "publisher": source,
+                "providerPublishTime": _parse_rss_timestamp(pub_date),
+                "link": link,
+            })
 
-        candidates.sort(key=lambda x: x.get("providerPublishTime") or 0, reverse=True)
-        candidates = candidates[: max(1, limit)]
+        self._last_diagnostic["candidate_result_count"] = len(candidates)
+        relevant = [item for item in candidates if _is_symbol_relevant(symbol, item["title"])]
+        self._last_diagnostic["relevant_result_count"] = len(relevant)
+
+        allow_low_quality = _env_flag("NEWS_RSS_ALLOW_LOW_QUALITY", False)
+        quality_filtered = [
+            item for item in relevant
+            if _source_quality(item["publisher"]) >= _min_source_quality()
+        ]
+        self._last_diagnostic["quality_filtered_count"] = len(relevant) - len(quality_filtered)
+        pool = relevant if allow_low_quality else quality_filtered
+
+        # Rank actionable catalyst types first, then source quality, then recency.
+        ranked: list[tuple[int, int, float, dict]] = []
+        for item in pool:
+            event = _classify_catalyst(symbol, item)
+            category_score = 2 if event.category in _ACTIONABLE_CATEGORIES else 0
+            quality = _source_quality(item["publisher"])
+            timestamp = item.get("providerPublishTime") or 0
+            ranked.append((category_score, quality, float(timestamp), item))
+        ranked.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        candidates = [item for _, _, _, item in ranked[: max(1, limit)]]
         self._last_diagnostic["parsed_result_count"] = len(candidates)
 
         for item in candidates:
@@ -79,7 +118,7 @@ class RSSNewsProvider(NewsProvider):
 
         if out.structured_catalysts:
             out.news_available = True
-            material = [x for x in out.structured_catalysts if x.category != "NONE"]
+            material = [x for x in out.structured_catalysts if _is_actionable_catalyst(x)]
             if material:
                 out.catalyst_status = "CATALYST_IDENTIFIED"
                 out.upcoming_catalysts = [
@@ -87,8 +126,8 @@ class RSSNewsProvider(NewsProvider):
                     for x in material[:3]
                 ]
             else:
-                out.catalyst_status = "NO_MATERIAL_CATALYST"
-                out.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
+                out.catalyst_status = "NO_ACTIONABLE_CATALYST"
+                out.upcoming_catalysts = ["NO_ACTIONABLE_CATALYST"]
         else:
             out.news_available = False
             out.facts.append("NO_RECENT_NEWS")
@@ -139,3 +178,52 @@ def _parse_rss_timestamp(value: str) -> float | None:
             return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
         except (TypeError, ValueError, OverflowError):
             return None
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _min_source_quality() -> int:
+    try:
+        return max(0, min(100, int(os.getenv("NEWS_RSS_MIN_SOURCE_QUALITY", "40"))))
+    except ValueError:
+        return 40
+
+
+def _source_quality(source: str) -> int:
+    normalized = (source or "").strip().lower()
+    if not normalized:
+        return 50
+    if any(pattern in normalized for pattern in _LOW_QUALITY_SOURCE_PATTERNS):
+        return 25
+    if any(name in normalized for name in (
+        "reuters", "associated press", "bloomberg", "cnbc", "wall street journal", "financial times"
+    )):
+        return 95
+    if any(name in normalized for name in (
+        "yahoo finance", "marketwatch", "investing.com", "benzinga", "seeking alpha", "motley fool"
+    )):
+        return 80
+    if normalized in {"google_news_rss", "bing_news_rss"}:
+        return 50
+    return 60
+
+
+def _is_symbol_relevant(symbol: str, title: str) -> bool:
+    text = " ".join((title or "").upper().split())
+    token = symbol.upper()
+    # Require a ticker-like token, not a loose substring. This blocks unrelated
+    # results such as a Fastly article appearing in a DDOG search.
+    return bool(re.search(rf"(?<![A-Z0-9])\$?{re.escape(token)}(?![A-Z0-9])", text))
+
+
+def _is_actionable_catalyst(event: CatalystEvent) -> bool:
+    return (
+        event.category in _ACTIONABLE_CATEGORIES
+        and event.importance in {"HIGH", "MEDIUM"}
+        and event.confidence in {"HIGH", "MEDIUM"}
+    )
