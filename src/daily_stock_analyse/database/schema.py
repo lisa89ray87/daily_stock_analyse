@@ -67,6 +67,13 @@ def ensure_schema(conn: Any) -> None:
             ON CONFLICT (version) DO NOTHING
             """
         )
+        cur.execute(
+            """
+            INSERT INTO schema_migrations(version)
+            VALUES (6)
+            ON CONFLICT (version) DO NOTHING
+            """
+        )
 
     conn.commit()
 
@@ -162,6 +169,7 @@ def _ensure_signals_schema(cur: Any) -> None:
         )
     _relax_legacy_not_null_column(cur, "signals", "strategy_id")
     _relax_legacy_not_null_column(cur, "signals", "action")
+    _relax_legacy_not_null_column(cur, "signals", "generated_at")
 
     if not _constraint_exists(cur, "fk_signals_run_id"):
         cur.execute(

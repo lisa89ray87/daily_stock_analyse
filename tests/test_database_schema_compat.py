@@ -154,6 +154,12 @@ class _SchemaCursor:
                 column["is_nullable"] = "YES"
             return self
 
+        if lower.startswith("alter table signals alter column generated_at drop not null"):
+            column = self.state["tables"]["signals"]["columns"].get("generated_at")
+            if isinstance(column, dict):
+                column["is_nullable"] = "YES"
+            return self
+
         if lower.startswith("alter table signals rename column confidence to legacy_confidence_numeric"):
             table = self.state["tables"]["signals"]
             table["columns"]["legacy_confidence_numeric"] = table["columns"].pop("confidence")
@@ -312,7 +318,7 @@ def test_ensure_schema_preserves_uuid_signal_id_and_adds_run_id_idempotently():
     assert signals["rows"][0]["run_id"] is None
     assert "uq_signals_run_symbol_direction" in state["indexes"]
     assert "fk_signals_run_id" in state["constraints"]
-    assert state["migrations"] == {1, 2, 3, 4, 5}
+    assert state["migrations"] == {1, 2, 3, 4, 5, 6}
 
 
 def test_ensure_schema_migrates_signal_outcomes_signal_id_to_match_uuid_signals():
@@ -384,6 +390,21 @@ def test_ensure_schema_relaxes_legacy_action_not_null_requirement():
     assert isinstance(action_column, dict)
     assert action_column["is_nullable"] == "YES"
     assert state["tables"]["signals"]["rows"][0]["action"] == "BUY"
+
+
+def test_ensure_schema_relaxes_legacy_generated_at_not_null_requirement():
+    state = _legacy_uuid_state()
+    state["tables"]["signals"]["columns"]["generated_at"] = {"type": "text", "is_nullable": "NO", "column_default": None}
+    state["tables"]["signals"]["rows"][0]["generated_at"] = "2026-08-11T00:00:00Z"
+    conn = _SchemaConn(state)
+
+    ensure_schema(conn)
+    ensure_schema(conn)
+
+    generated_at_column = state["tables"]["signals"]["columns"]["generated_at"]
+    assert isinstance(generated_at_column, dict)
+    assert generated_at_column["is_nullable"] == "YES"
+    assert state["tables"]["signals"]["rows"][0]["generated_at"] == "2026-08-11T00:00:00Z"
 
 
 def test_uuid_signal_id_is_preserved_by_outcome_engine():
