@@ -61,12 +61,12 @@ class RSSNewsProvider(NewsProvider):
                 {
                     "title": title,
                     "publisher": source,
-                    "providerPublishTime": _parse_rss_datetime(pub_date),
+                    "providerPublishTime": _parse_rss_timestamp(pub_date),
                     "link": link,
                 }
             )
 
-        candidates.sort(key=lambda x: x.get("providerPublishTime") or "", reverse=True)
+        candidates.sort(key=lambda x: x.get("providerPublishTime") or 0, reverse=True)
         candidates = candidates[: max(1, limit)]
         self._last_diagnostic["parsed_result_count"] = len(candidates)
 
@@ -126,16 +126,16 @@ def _text(element) -> str:
     return (element.text or "").strip() if element is not None else ""
 
 
-def _parse_rss_datetime(value: str) -> str | None:
+def _parse_rss_timestamp(value: str) -> float | None:
     if not value:
         return None
     try:
         parsed = parsedate_to_datetime(value)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).isoformat()
+        return parsed.timestamp()
     except (TypeError, ValueError, OverflowError):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).isoformat()
-        except (TypeError, ValueError):
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
             return None
