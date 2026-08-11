@@ -24,8 +24,9 @@ jobs:
   live-alerts:
     concurrency:
       group: live-stock-alerts-${{ github.ref_name }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -40,10 +41,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Prepare alert artifacts directory
+        run: mkdir -p artifacts
+
       - name: Restore alert state
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         id: restore-alert-state
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: artifacts/alert_state.json
           key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
@@ -95,14 +99,14 @@ jobs:
 
       - name: Save alert state
         if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: artifacts/alert_state.json
           key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload live artifacts
         if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: live-stock-alert-artifacts
           path: artifacts/
