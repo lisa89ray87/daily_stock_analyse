@@ -3,8 +3,10 @@ from pathlib import Path
 
 from src.daily_stock_analyse.config import load_config
 from src.daily_stock_analyse.market_hours import (
-    EXTENDED_HOURS_SOURCE,
+    AFTER_HOURS_SOURCE,
     LIVE_INTRADAY_SOURCE,
+    LATEST_AVAILABLE_SOURCE,
+    PREMARKET_SOURCE,
     get_market_session_status,
     is_weekday_in_timezone,
     next_us_market_open_malaysia,
@@ -57,7 +59,7 @@ def test_extended_hours_selection_when_regular_market_closed():
     session = get_market_session_status(datetime(2026, 8, 10, 22, 30, tzinfo=UTC), "America/New_York", "09:30", "16:00")
     selected = select_market_data_for_session(md, session)
     assert selected.selected_price == 101.25
-    assert selected.selected_data_source == EXTENDED_HOURS_SOURCE
+    assert selected.selected_data_source == AFTER_HOURS_SOURCE
     assert selected.live_regular_session is False
 
 
@@ -68,6 +70,22 @@ def test_live_data_selection_during_us_regular_hours():
     assert selected.selected_price == 100.5
     assert selected.selected_data_source == LIVE_INTRADAY_SOURCE
     assert selected.live_regular_session is True
+
+
+def test_premarket_prefers_premarket_quote_when_available():
+    md = MarketData(symbol="AMD", premarket_price=102.0)
+    session = get_market_session_status(datetime(2026, 8, 10, 12, 0, tzinfo=UTC), "America/New_York", "09:30", "16:00")
+    selected = select_market_data_for_session(md, session)
+    assert selected.selected_price == 102.0
+    assert selected.selected_data_source == PREMARKET_SOURCE
+
+
+def test_premarket_uses_latest_valid_quote_when_no_dedicated_extended_quote_exists():
+    md = MarketData(symbol="AMD", regular_price=100.0, price=100.0)
+    session = get_market_session_status(datetime(2026, 8, 10, 12, 0, tzinfo=UTC), "America/New_York", "09:30", "16:00")
+    selected = select_market_data_for_session(md, session)
+    assert selected.selected_price == 100.0
+    assert selected.selected_data_source == LATEST_AVAILABLE_SOURCE
 
 
 def test_dst_handling_for_next_open_in_malaysia_changes_hour():

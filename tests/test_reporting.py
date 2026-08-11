@@ -160,6 +160,63 @@ def test_reporting_does_not_claim_after_hours_is_live_regular_session():
     assert "Extended-hours prices are not U.S. regular-session live prices" in html
 
 
+def test_closed_report_with_after_hours_data_does_not_show_false_premarket_warning():
+    report = _sample_report()
+    report.market_data_session = "CLOSED"
+    report.latest_data_source = "AFTER_HOURS"
+    for analysis in report.analyses:
+        analysis.market_data.session_state = "CLOSED"
+        analysis.market_data.selected_data_source = "AFTER_HOURS"
+        analysis.market_data.selected_price_session = "AFTER_HOURS"
+        analysis.market_data.after_hours_price = 101.0
+        analysis.market_data.latest_extended_price = 101.0
+        analysis.market_data.latest_extended_session = "AFTER_HOURS"
+        analysis.data_quality.warnings = []
+    markdown = render_markdown(report)
+    html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
+    assert "PREMARKET_UNAVAILABLE" not in markdown
+    assert "AFTER_HOURS" in markdown
+    assert "Latest Data Source: AFTER_HOURS" in markdown
+    assert "PREMARKET_UNAVAILABLE" not in html
+
+
+def test_after_hours_report_renders_prices_and_ai_section_normally():
+    report = _sample_report()
+    report.market_data_session = "AFTER_HOURS"
+    report.latest_data_source = "AFTER_HOURS"
+    for analysis in report.analyses:
+        analysis.market_data.session_state = "AFTER_HOURS"
+        analysis.market_data.selected_data_source = "AFTER_HOURS"
+        analysis.market_data.selected_price_session = "AFTER_HOURS"
+        analysis.market_data.after_hours_price = 101.0
+        analysis.market_data.latest_extended_price = 101.0
+        analysis.market_data.latest_extended_session = "AFTER_HOURS"
+        analysis.data_quality.warnings = []
+    ai_overlay = {
+        "enabled": True,
+        "provider": "openai",
+        "provider_display": "OpenAI",
+        "status": "Enabled",
+        "fallback_used": False,
+        "summary": "Summary",
+        "action_points": ["A", "B", "C"],
+        "market_bias": "MIXED",
+        "market_regime": "Tape",
+        "best_long_candidate": {"symbol": "AMD", "reason": "Reason"},
+        "best_short_candidate": {"symbol": "NONE", "reason": "Reason"},
+        "best_day_trade": {"symbol": "NONE", "direction": "NONE", "reason": "Reason", "status": "No trade"},
+        "stocks_to_watch": [],
+        "stocks_to_avoid": [],
+        "key_risks": [],
+        "final_conclusion": "Conclusion",
+        "message": "Conclusion",
+    }
+    html = render_html(report, Path(__file__).resolve().parents[1] / "templates", ai_overlay)
+    assert "AFTER_HOURS" in html
+    assert "101.00" in html
+    assert "AI Trading Conclusion" in html
+
+
 def test_reporting_renders_variable_number_of_analysis_symbols():
     report = _sample_report()
     report.fixed_symbols = ["NOK", "AMD", "NVDA"]

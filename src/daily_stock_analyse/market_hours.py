@@ -36,6 +36,9 @@ mcal = None
 
 LIVE_INTRADAY_SOURCE = "Live / Intraday Regular Session"
 EXTENDED_HOURS_SOURCE = "24-Hour / Extended Hours"
+PREMARKET_SOURCE = "PRE_MARKET"
+AFTER_HOURS_SOURCE = "AFTER_HOURS"
+LATEST_AVAILABLE_SOURCE = "Latest Available Quote"
 UNAVAILABLE_SOURCE = "UNAVAILABLE"
 
 
@@ -203,14 +206,31 @@ def select_market_data_for_session(market_data, session: MarketSessionStatus) ->
         )
 
     extended_price, extended_session = _extended_hours_price(market_data)
+    if extended_price is not None:
+        source = EXTENDED_HOURS_SOURCE
+        if extended_session == "PREMARKET":
+            source = PREMARKET_SOURCE
+        elif extended_session == "AFTER_HOURS":
+            source = AFTER_HOURS_SOURCE
+        return SessionAwareDataSelection(
+            session_state=session.session_state,
+            selected_data_source=source,
+            selected_price=extended_price,
+            selected_price_session=extended_session,
+            live_data_required=False,
+            live_regular_session=False,
+            extended_hours_used=True,
+        )
+
+    fallback_price, fallback_session = _latest_valid_quote(market_data)
     return SessionAwareDataSelection(
         session_state=session.session_state,
-        selected_data_source=EXTENDED_HOURS_SOURCE if extended_price is not None else UNAVAILABLE_SOURCE,
-        selected_price=extended_price,
-        selected_price_session=extended_session,
+        selected_data_source=LATEST_AVAILABLE_SOURCE if fallback_price is not None else UNAVAILABLE_SOURCE,
+        selected_price=fallback_price,
+        selected_price_session=fallback_session,
         live_data_required=False,
         live_regular_session=False,
-        extended_hours_used=extended_price is not None,
+        extended_hours_used=False,
     )
 
 
@@ -226,6 +246,16 @@ def _extended_hours_price(market_data) -> tuple[float | None, str]:
     if market_data.after_hours_price is not None:
         return market_data.after_hours_price, "AFTER_HOURS"
     if market_data.latest_extended_price is not None and market_data.latest_extended_session in {"PREMARKET", "AFTER_HOURS"}:
+        return market_data.latest_extended_price, market_data.latest_extended_session
+    return None, "UNKNOWN"
+
+
+def _latest_valid_quote(market_data) -> tuple[float | None, str]:
+    if market_data.regular_price is not None:
+        return market_data.regular_price, "REGULAR"
+    if market_data.price is not None:
+        return market_data.price, market_data.selected_price_session or "REGULAR"
+    if market_data.latest_extended_price is not None:
         return market_data.latest_extended_price, market_data.latest_extended_session
     return None, "UNKNOWN"
 

@@ -228,6 +228,9 @@ def _analyze_symbol(
 def _report_data_source(analyses: list[StockAnalysis], session_state: str) -> str:
     if session_state == "US_REGULAR":
         return "Live / Intraday Regular Session"
+    data_sources = {x.market_data.selected_data_source for x in analyses if x.market_data.selected_data_source != "UNAVAILABLE"}
+    if len(data_sources) == 1:
+        return next(iter(data_sources))
     if any(x.market_data.extended_hours_used for x in analyses):
         return "24-Hour / Extended Hours"
     return "UNAVAILABLE"
@@ -249,16 +252,21 @@ def _has_after_hours_data(md) -> bool:
     return md.after_hours_price is not None or md.latest_extended_session == "AFTER_HOURS"
 
 
+def _has_usable_selected_price(md) -> bool:
+    return md.price is not None and md.selected_data_source != "UNAVAILABLE"
+
+
 def _build_data_quality_warnings(symbol: str, md) -> list[str]:
     warnings: list[str] = []
     premarket_available = _has_premarket_data(md)
     after_hours_available = _has_after_hours_data(md)
+    usable_selected_price = _has_usable_selected_price(md)
 
-    if not premarket_available:
+    if md.session_state == "PRE_MARKET" and not premarket_available and not usable_selected_price:
         warnings.append("PREMARKET_UNAVAILABLE")
-    if md.vwap is None and md.opening_range_high is None:
+    if md.live_data_required and md.vwap is None and md.opening_range_high is None:
         warnings.append("INTRADAY_UNAVAILABLE")
-    if not (premarket_available or after_hours_available):
+    if not usable_selected_price:
         warnings.append("EXTENDED_HOURS_UNAVAILABLE")
     if md.volume is None:
         warnings.append("VOLUME_UNAVAILABLE")

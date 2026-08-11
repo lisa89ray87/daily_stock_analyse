@@ -75,10 +75,11 @@ def test_data_quality_flags_and_warnings_present():
         _FakeNewsProvider(),
         now_utc=datetime(2026, 8, 10, 22, 30, tzinfo=UTC),
     )
-    assert result.data_quality.price_available is False
-    assert "PREMARKET_UNAVAILABLE" in result.data_quality.warnings
-    assert "INTRADAY_UNAVAILABLE" in result.data_quality.warnings
-    assert "EXTENDED_HOURS_UNAVAILABLE" in result.data_quality.warnings
+    assert result.data_quality.price_available is True
+    assert "PREMARKET_UNAVAILABLE" not in result.data_quality.warnings
+    assert "INTRADAY_UNAVAILABLE" not in result.data_quality.warnings
+    assert "EXTENDED_HOURS_UNAVAILABLE" not in result.data_quality.warnings
+    assert result.market_data.selected_data_source == "Latest Available Quote"
 
 
 def test_after_hours_price_is_selected_outside_regular_session():
@@ -105,7 +106,7 @@ def test_after_hours_price_is_selected_outside_regular_session():
     )
     assert result.market_data.price == 101.5
     assert result.market_data.session_state == "AFTER_HOURS"
-    assert result.market_data.selected_data_source == "24-Hour / Extended Hours"
+    assert result.market_data.selected_data_source == "AFTER_HOURS"
     assert result.market_data.live_regular_session is False
 
 
@@ -137,8 +138,11 @@ def test_extended_hours_warning_not_added_when_after_hours_data_exists():
         premarket_volume=None,
         latest_extended_session="AFTER_HOURS",
     )
+    md.session_state = "AFTER_HOURS"
+    md.selected_data_source = "AFTER_HOURS"
+    md.price = 101.0
     warnings = _build_data_quality_warnings("AMD", md)
-    assert "PREMARKET_UNAVAILABLE" in warnings
+    assert "PREMARKET_UNAVAILABLE" not in warnings
     assert "EXTENDED_HOURS_UNAVAILABLE" not in warnings
 
 
@@ -157,6 +161,7 @@ def test_extended_hours_warning_added_when_no_extended_prices_or_session():
         premarket_volume=None,
         latest_extended_session="UNKNOWN",
     )
+    md.session_state = "PRE_MARKET"
     warnings = _build_data_quality_warnings("AMD", md)
     assert "PREMARKET_UNAVAILABLE" in warnings
     assert "EXTENDED_HOURS_UNAVAILABLE" in warnings
@@ -180,3 +185,29 @@ def test_premarket_availability_uses_session_flag_when_present():
     result = _analyze_symbol("AMD", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
     assert result.data_quality.premarket_available is True
     assert "PREMARKET_UNAVAILABLE" not in result.data_quality.warnings
+
+
+def test_closed_session_with_no_usable_price_generates_real_data_warning():
+    md = MarketData(
+        symbol="AMD",
+        price=None,
+        regular_price=None,
+        premarket_price=None,
+        after_hours_price=None,
+        latest_extended_price=None,
+        latest_extended_session="UNKNOWN",
+        provider="yfinance",
+        data_timestamp="2026-08-10T00:00:00Z",
+    )
+    result = _analyze_symbol(
+        "AMD",
+        _cfg(),
+        "MIXED",
+        0.0,
+        _FakeMarketProvider(md),
+        _FakeNewsProvider(),
+        now_utc=datetime(2026, 8, 10, 22, 30, tzinfo=UTC),
+    )
+    assert result.data_quality.price_available is False
+    assert "PREMARKET_UNAVAILABLE" not in result.data_quality.warnings
+    assert "EXTENDED_HOURS_UNAVAILABLE" in result.data_quality.warnings
