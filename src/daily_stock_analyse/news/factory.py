@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from ..models import CatalystEvent, IntelligenceBlock
 from ..providers.base import NewsProvider
 from ..providers.yfinance_provider import YFinanceNewsProvider
@@ -8,8 +10,9 @@ from .rss_provider import BingNewsRSSProvider, GoogleNewsRSSProvider
 
 
 class AggregatedNewsProvider(NewsProvider):
-    def __init__(self, providers: list[tuple[str, NewsProvider]]):
+    def __init__(self, providers: list[tuple[str, NewsProvider]], *, max_age_hours: int = 24):
         self.providers = providers
+        self.max_age_hours = max(1, int(max_age_hours))
         self._last_diagnostic: dict[str, object] = {}
 
     def get_news(self, symbol: str, limit: int = 5) -> IntelligenceBlock:
@@ -32,7 +35,18 @@ class AggregatedNewsProvider(NewsProvider):
             seen.add(key)
             deduped.append(event)
 
-        events = deduped[: max(1, limit)]
+        freshness_input = len(deduped)
+        cutoff = datetime.now(UTC) - timedelta(hours=self.max_age_hours)
+        fresh: list[CatalystEvent] = []
+        for event in deduped:
+            published = _parse_timestamp(event.published_at)
+            if published is None:
+                # Do not treat undated articles as fresh catalysts.
+                continue
+            if published >= cutoff:
+                fresh.append(event)
+
+        events = fresh[: max(1, limit)]
         material = [event for event in events if event.category != "NONE"]
         out = IntelligenceBlock(
             facts=[f"{event.source}: {event.headline}" for event in events],
@@ -51,6 +65,9 @@ class AggregatedNewsProvider(NewsProvider):
         self._last_diagnostic = {
             "collected_count": len(collected),
             "deduped_count": len(deduped),
+            "freshness_input_count": freshness_input,
+            "freshness_filtered_count": len(fresh),
+            "max_age_hours": self.max_age_hours,
             "provider_statuses": ",".join(provider_statuses),
         }
         return out
@@ -59,7 +76,7 @@ class AggregatedNewsProvider(NewsProvider):
         return dict(self._last_diagnostic)
 
 
-def create_news_provider(provider_name: str, **_kwargs) -> NewsProvider:
+def create_news_provider(provider_name: str, **kwargs) -> NewsProvider:
     """Create one or more fail-open news providers.
 
     Supported values are comma-separated: yfinance, google_rss, bing_rss.
@@ -88,4 +105,18 @@ def create_news_provider(provider_name: str, **_kwargs) -> NewsProvider:
 
     if len(providers) == 1:
         return providers[0][1]
-    return wrap(AggregatedNewsProvider(providers), "aggregated")
+
+    max_age_hours = kwargs.get("max_age_hours", 24)
+    return wrap(AggregatedNewsProvider(providers, max_age_hours=max_age_hours), "aggregated")
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    except (TypeError, ValueError, OverflowError):
+        return None
