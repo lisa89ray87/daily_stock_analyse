@@ -12,6 +12,8 @@ on:
     - cron: "0 20 * * 1-5"  # 16:00 ET during EDT
     - cron: "0 21 * * 1-5"  # 16:00 ET during EST
 
+# Prevent overlapping daily reports. A newer run cancels an older run for the
+# same ref, which is safer than allowing duplicate open/close emails.
 concurrency:
   group: daily-stock-analysis-${{ github.ref }}
   cancel-in-progress: true
@@ -47,10 +49,6 @@ jobs:
           }
 
           target = targets.get((now.hour, now.minute))
-
-          # GitHub scheduled workflows can start a few minutes late. Allow a
-          # 20-minute window around the intended NY open/close while preventing
-          # the alternate DST schedule from producing a duplicate report.
           if target is None:
               distances = [
                   (
@@ -113,7 +111,7 @@ jobs:
           ALERT_MIN_RVOL: ${{ vars.ALERT_MIN_RVOL }}
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
-          NEWS_PROVIDER: "yfinance,searxng"
+          NEWS_PROVIDER: "yfinance"
           NEWS_DIAGNOSTICS: "1"
           NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
           DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}
