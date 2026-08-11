@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from ..models import CatalystEvent, IntelligenceBlock
 from ..providers.base import NewsProvider
 from ..providers.yfinance_provider import YFinanceNewsProvider
+from .diagnostics import wrap
 from .searxng_provider import SearXNGNewsProvider
 
 
@@ -180,13 +181,16 @@ def create_news_provider(
     providers: list[NewsProvider] = []
     for name in parts:
         if name == "yfinance":
-            providers.append(YFinanceNewsProvider())
+            providers.append(wrap(YFinanceNewsProvider(), "yfinance"))
         elif name == "searxng":
             providers.append(
-                SearXNGNewsProvider(
-                    base_urls=searxng_base_urls,
-                    timeout_seconds=searxng_timeout_seconds,
-                    use_public_instances=searxng_public_instances_enabled,
+                wrap(
+                    SearXNGNewsProvider(
+                        base_urls=searxng_base_urls,
+                        timeout_seconds=searxng_timeout_seconds,
+                        use_public_instances=searxng_public_instances_enabled,
+                    ),
+                    "searxng",
                 )
             )
         else:
@@ -195,4 +199,4 @@ def create_news_provider(
     if len(providers) == 1:
         return providers[0]
 
-    return AggregatedNewsProvider(providers, max_age_hours=news_max_age_hours)
+    return wrap(AggregatedNewsProvider(providers, max_age_hours=news_max_age_hours), "aggregated")
