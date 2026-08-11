@@ -16,6 +16,9 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append(f"Generated: {report.generated_at_malaysia}")
     lines.append(f"Next U.S. Regular Market Open: {report.next_us_market_open_malaysia}")
     lines.append(f"Session: {report.session_label}")
+    lines.append(f"Market Data Session: {report.market_data_session}")
+    lines.append(f"Latest Data Source: {report.latest_data_source}")
+    lines.append(f"Live Regular Session: {'Yes' if report.live_regular_session else 'No'}")
     lines.append("")
 
     mr = report.market_regime
@@ -49,15 +52,16 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append(f"- Closest SHORT Candidate: {report.closest_short_candidate}")
     lines.append(f"- Best Overall: {report.best_overall}")
 
-    lines.append("\n## FIXED SIX")
+    lines.append("\n## ANALYSIS SYMBOLS")
     for sym in report.fixed_symbols:
         lines.append(f"- {sym}")
 
-    lines.append("\n## Overnight / Pre-market")
+    lines.append("\n## Session-Aware Market Data")
     for analysis in report.analyses:
         md = analysis.market_data
         lines.append(
-            f"- {analysis.symbol}: OVERNIGHT_REFERENCE={_fmt(md.overnight_reference_price)}, "
+            f"- {analysis.symbol}: SESSION_STATE={md.session_state}, DATA_SOURCE={md.selected_data_source}, PRICE_SESSION={md.selected_price_session}, "
+            f"LIVE_REGULAR={'Yes' if md.live_regular_session else 'No'}, OVERNIGHT_REFERENCE={_fmt(md.overnight_reference_price)}, "
             f"REGULAR={_fmt(md.regular_price)}, PREMARKET={_fmt(md.premarket_price)}, AFTER_HOURS={_fmt(md.after_hours_price)}, "
             f"LATEST_EXT={_fmt(md.latest_extended_price)} ({md.latest_extended_session}), "
             f"gap_pct={_fmt(md.gap_pct)}, premarket_change_pct={_fmt(md.premarket_change_pct)}, "
@@ -76,7 +80,7 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
             lines.append(f"- {analysis.symbol}: OK")
 
     lines.append("\n## Selection Metadata")
-    lines.append(f"- Fixed symbols: {', '.join(report.fixed_symbols)}")
+    lines.append(f"- Configured analysis symbols: {', '.join(report.fixed_symbols)}")
     lines.append(f"- Dynamic symbols selected: {', '.join(report.dynamic_symbols) if report.dynamic_symbols else 'NONE'}")
 
     if ai_overlay:
@@ -184,6 +188,7 @@ def _stock_core(analysis: StockAnalysis) -> list[str]:
     out.extend(
         [
             "- Data Perspective:",
+            f"  session_state={m.session_state}, data_source={m.selected_data_source}, price_session={m.selected_price_session}, live_regular={'Yes' if m.live_regular_session else 'No'}",
             f"  regular={_fmt(m.regular_price)}, premarket={_fmt(m.premarket_price)}, after_hours={_fmt(m.after_hours_price)}, "
             f"latest_ext={_fmt(m.latest_extended_price)} ({m.latest_extended_session}), overnight_ref={_fmt(m.overnight_reference_price)}",
             f"  gap={_fmt(m.gap_pct)}, premarket_change={_fmt(m.premarket_change_pct)}, premarket_volume={_fmt(m.premarket_volume)}, "

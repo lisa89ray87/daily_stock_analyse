@@ -32,6 +32,9 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          ANALYSIS_SYMBOLS: ${{ vars.ANALYSIS_SYMBOLS }}
+          MAX_ANALYSIS_SYMBOLS: ${{ vars.MAX_ANALYSIS_SYMBOLS }}
+          FIXED_SIX_SYMBOLS: ${{ vars.FIXED_SIX_SYMBOLS }}
           AI_PRIMARY_PROVIDER: ${{ vars.AI_PRIMARY_PROVIDER }}
           AI_FALLBACK_PROVIDER: ${{ vars.AI_FALLBACK_PROVIDER }}
           DAILY_REPORT_CRON_UTC: ${{ vars.DAILY_REPORT_CRON_UTC }}

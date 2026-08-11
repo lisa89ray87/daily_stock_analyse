@@ -184,3 +184,95 @@ def test_ai_provider_defaults(monkeypatch):
     assert cfg.ai_primary_provider == "openai"
     assert cfg.ai_fallback_provider == "gemini"
     assert cfg.gemini_api_key is None
+
+
+def test_fixed_six_symbols_missing_uses_current_defaults(monkeypatch):
+    monkeypatch.delenv("ANALYSIS_SYMBOLS", raising=False)
+    monkeypatch.delenv("FIXED_SIX_SYMBOLS", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY"]
+
+
+def test_analysis_symbols_parses_commas_and_whitespace(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", " nok, AMD , nvda, INTC, sndk , skhy ")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY"]
+
+
+def test_analysis_symbols_ignores_empty_entries(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,,AMD, ,NVDA")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA"]
+
+
+def test_analysis_symbols_more_than_six_is_allowed(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,AMD,NVDA,INTC,SNDK,SKHY,AMAT,PANW,DDOG")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY", "AMAT", "PANW", "DDOG"]
+
+
+def test_analysis_symbols_fewer_than_six_is_allowed(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,AMD,NVDA")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA"]
+
+
+def test_analysis_symbols_deduplicates_preserving_first_occurrence(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,AMD,NOK,amd,NVDA")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA"]
+
+
+def test_analysis_symbols_empty_value_fails_clearly(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "   ")
+    try:
+        load_config(Path(__file__).resolve().parents[1])
+    except ValueError as exc:
+        assert "ANALYSIS_SYMBOLS must contain at least 1 symbol" in str(exc)
+    else:
+        raise AssertionError("Expected ANALYSIS_SYMBOLS empty-list validation error")
+
+
+def test_max_analysis_symbols_accepts_exact_max(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,AMD,NVDA,INTC,SNDK,SKHY,AMAT,PANW,DDOG,CRM")
+    monkeypatch.setenv("MAX_ANALYSIS_SYMBOLS", "10")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert len(cfg.fixed_watchlist) == 10
+
+
+def test_max_analysis_symbols_rejects_more_than_max(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "NOK,AMD,NVDA,INTC,SNDK,SKHY,AMAT,PANW,DDOG,CRM,MU")
+    monkeypatch.setenv("MAX_ANALYSIS_SYMBOLS", "10")
+    try:
+        load_config(Path(__file__).resolve().parents[1])
+    except ValueError as exc:
+        assert "ANALYSIS_SYMBOLS supplied 11 unique symbols; MAX_ANALYSIS_SYMBOLS is 10" in str(exc)
+    else:
+        raise AssertionError("Expected MAX_ANALYSIS_SYMBOLS limit validation error")
+
+
+def test_invalid_max_analysis_symbols_values_fail_clearly(monkeypatch):
+    for raw in ["abc", "0", "-1"]:
+        monkeypatch.setenv("MAX_ANALYSIS_SYMBOLS", raw)
+        monkeypatch.delenv("ANALYSIS_SYMBOLS", raising=False)
+        monkeypatch.delenv("FIXED_SIX_SYMBOLS", raising=False)
+        try:
+            load_config(Path(__file__).resolve().parents[1])
+        except ValueError as exc:
+            assert "MAX_ANALYSIS_SYMBOLS must be a positive integer" in str(exc)
+        else:
+            raise AssertionError("Expected MAX_ANALYSIS_SYMBOLS validation error")
+
+
+def test_fixed_six_symbols_used_when_analysis_symbols_missing(monkeypatch):
+    monkeypatch.delenv("ANALYSIS_SYMBOLS", raising=False)
+    monkeypatch.setenv("FIXED_SIX_SYMBOLS", "NOK,AMD,NVDA")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["NOK", "AMD", "NVDA"]
+
+
+def test_analysis_symbols_takes_precedence_over_fixed_six_symbols(monkeypatch):
+    monkeypatch.setenv("ANALYSIS_SYMBOLS", "AMAT,PANW,DDOG")
+    monkeypatch.setenv("FIXED_SIX_SYMBOLS", "NOK,AMD,NVDA,INTC,SNDK,SKHY")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.fixed_watchlist == ["AMAT", "PANW", "DDOG"]

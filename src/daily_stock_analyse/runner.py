@@ -10,7 +10,7 @@ from .ai_analysis import generate_ai_overlay
 from .config import AppConfig, load_config
 from .email_provider import EmailPayload, ResendEmailProvider
 from .market import build_market_regime
-from .market_hours import next_us_market_open_malaysia
+from .market_hours import apply_session_aware_market_data, get_market_session_status, next_us_market_open_malaysia, utc_now
 from .models import BattlePlan, DailyAnalysisReport, DataQuality, IntelligenceBlock, StockAnalysis
 from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
 from .reporting import render_html, render_markdown
@@ -21,6 +21,13 @@ from .selector import select_dynamic_opportunities
 def run_analysis(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     cfg = load_config(repo_root)
+    generated_at_utc = utc_now()
+    session = get_market_session_status(
+        generated_at_utc,
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm=cfg.live_market_open,
+        market_close_hhmm=cfg.live_market_close,
+    )
 
     market_provider = YFinanceMarketDataProvider()
     news_provider = YFinanceNewsProvider()
@@ -34,7 +41,7 @@ def run_analysis(base_path: Path | None = None) -> int:
 
     for symbol in all_symbols:
         try:
-            analyses.append(_analyze_symbol(symbol, cfg, market_regime.label, sector_strength, market_provider, news_provider))
+            analyses.append(_analyze_symbol(symbol, cfg, market_regime.label, sector_strength, market_provider, news_provider, now_utc=generated_at_utc))
         except Exception as exc:
             errors.append(f"{symbol}: analysis failed ({exc})")
             analyses.append(_unavailable_analysis(symbol, f"Provider failure: {exc}"))
@@ -63,7 +70,6 @@ def run_analysis(base_path: Path | None = None) -> int:
     best_short = _best_for_direction(selected_analyses, "SHORT")
     best_overall = _best_overall(selected_analyses)
 
-    generated_at_utc = datetime.now(UTC)
     generated_at_my = generated_at_utc.astimezone(ZoneInfo(cfg.morning_report_timezone))
     next_open_my = next_us_market_open_malaysia(
         generated_at_utc,
@@ -80,6 +86,9 @@ def run_analysis(base_path: Path | None = None) -> int:
         generated_at_malaysia=generated_at_my.strftime("%Y-%m-%d %H:%M %Z"),
         next_us_market_open_malaysia=next_open_my.strftime("%Y-%m-%d %H:%M %Z"),
         session_label="Morning research report",
+        market_data_session=session.session_state,
+        latest_data_source=_report_data_source(selected_analyses, session.session_state),
+        live_regular_session=session.session_state == "US_REGULAR",
         fixed_symbols=cfg.fixed_watchlist,
         dynamic_symbols=[x.symbol for x in dynamic],
         market_regime=market_regime,
@@ -142,8 +151,16 @@ def _analyze_symbol(
     sector_strength: float | None,
     market_provider,
     news_provider,
+    now_utc: datetime | None = None,
 ) -> StockAnalysis:
     md = market_provider.get_market_data(symbol)
+    apply_session_aware_market_data(
+        md,
+        now_utc or utc_now(),
+        market_timezone=cfg.live_market_timezone,
+        market_open_hhmm=cfg.live_market_open,
+        market_close_hhmm=cfg.live_market_close,
+    )
     intelligence = news_provider.get_news(symbol)
 
     if not intelligence.upcoming_catalysts and intelligence.news_available:
@@ -202,8 +219,18 @@ def _analyze_symbol(
             "news_available": intelligence.news_available,
             "intraday_available": md.vwap is not None or md.opening_range_high is not None,
             "premarket_available": premarket_available,
+            "live_data_required": md.live_data_required,
+            "extended_hours_used": md.extended_hours_used,
         },
     )
+
+
+def _report_data_source(analyses: list[StockAnalysis], session_state: str) -> str:
+    if session_state == "US_REGULAR":
+        return "Live / Intraday Regular Session"
+    if any(x.market_data.extended_hours_used for x in analyses):
+        return "24-Hour / Extended Hours"
+    return "UNAVAILABLE"
 
 
 def _display_name(symbol: str) -> str:

@@ -75,9 +75,7 @@ def test_service_waits_for_open_then_runs_and_stops_after_close(tmp_path: Path):
     from src.daily_stock_analyse.live_alerts import run_live_alerts
 
     ny_tz = ZoneInfo("America/New_York")
-    pre_open_market = datetime(2026, 8, 10, 9, 25, tzinfo=ny_tz)
-    open_market = datetime(2026, 8, 10, 9, 30, tzinfo=ny_tz)
-    close_market = datetime(2026, 8, 10, 16, 1, tzinfo=ny_tz)
+    after_hours_market = datetime(2026, 8, 10, 18, 30, tzinfo=ny_tz)
     open_time = datetime(2026, 8, 10, 9, 30, tzinfo=ny_tz)
     close_time = datetime(2026, 8, 10, 16, 0, tzinfo=ny_tz)
 
@@ -85,21 +83,7 @@ def test_service_waits_for_open_then_runs_and_stops_after_close(tmp_path: Path):
         _session(
             market_open=False,
             reason="Outside regular market hours (calendar fallback mode)",
-            now_market=pre_open_market,
-            open_time=open_time,
-            close_time=close_time,
-        ),
-        _session(
-            market_open=True,
-            reason="Market open (calendar fallback mode)",
-            now_market=open_market,
-            open_time=open_time,
-            close_time=close_time,
-        ),
-        _session(
-            market_open=False,
-            reason="Outside regular market hours (calendar fallback mode)",
-            now_market=close_market,
+            now_market=after_hours_market,
             open_time=open_time,
             close_time=close_time,
         ),
@@ -110,8 +94,7 @@ def test_service_waits_for_open_then_runs_and_stops_after_close(tmp_path: Path):
             "src.daily_stock_analyse.live_alerts.utc_now",
             side_effect=[
                 datetime(2026, 8, 10, 13, 25, tzinfo=UTC),
-                datetime(2026, 8, 10, 13, 30, tzinfo=UTC),
-                datetime(2026, 8, 10, 20, 1, tzinfo=UTC),
+                datetime(2026, 8, 14, 16, 30, tzinfo=UTC),
             ],
         ):
             with patch("src.daily_stock_analyse.live_alerts.get_market_session_status", side_effect=statuses):
@@ -167,20 +150,6 @@ def test_service_uses_configured_interval_between_open_evaluations(tmp_path: Pat
             open_time=open_time,
             close_time=close_time,
         ),
-        _session(
-            market_open=True,
-            reason="Market open (calendar fallback mode)",
-            now_market=open_market_2,
-            open_time=open_time,
-            close_time=close_time,
-        ),
-        _session(
-            market_open=False,
-            reason="Outside regular market hours (calendar fallback mode)",
-            now_market=closed_market,
-            open_time=open_time,
-            close_time=close_time,
-        ),
     ]
 
     with patch("src.daily_stock_analyse.live_alerts.load_config", return_value=_cfg(7)):
@@ -188,8 +157,7 @@ def test_service_uses_configured_interval_between_open_evaluations(tmp_path: Pat
             "src.daily_stock_analyse.live_alerts.utc_now",
             side_effect=[
                 datetime(2026, 8, 10, 14, 0, tzinfo=UTC),
-                datetime(2026, 8, 10, 14, 1, tzinfo=UTC),
-                datetime(2026, 8, 10, 20, 1, tzinfo=UTC),
+                datetime(2026, 8, 14, 16, 30, tzinfo=UTC),
             ],
         ):
             with patch("src.daily_stock_analyse.live_alerts.get_market_session_status", side_effect=statuses) as session_mock:

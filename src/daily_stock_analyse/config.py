@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
 DEFAULT_FIXED_WATCHLIST = ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY"]
+ANALYSIS_SYMBOLS_ENV_VAR = "ANALYSIS_SYMBOLS"
+FIXED_SIX_ENV_VAR = "FIXED_SIX_SYMBOLS"
+MAX_ANALYSIS_SYMBOLS_ENV_VAR = "MAX_ANALYSIS_SYMBOLS"
+DEFAULT_MAX_ANALYSIS_SYMBOLS = 20
+_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
 DEFAULT_CANDIDATE_UNIVERSE = [
     "AAPL",
     "MSFT",
@@ -136,6 +142,63 @@ def _normalize_fraction_threshold(value: float) -> float:
     return value
 
 
+def _parse_positive_int(raw: str | None, *, env_name: str, default: int) -> int:
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"{env_name} must be a positive integer; got empty value")
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{env_name} must be a positive integer; got '{value}'") from exc
+    if parsed <= 0:
+        raise ValueError(f"{env_name} must be a positive integer; got {parsed}")
+    return parsed
+
+
+def _normalize_symbol_list(raw: str, *, env_name: str, max_symbols: int) -> list[str]:
+    symbols = [part.strip().upper() for part in raw.split(",")]
+    symbols = [symbol for symbol in symbols if symbol]
+    if not symbols:
+        raise ValueError(f"{env_name} must contain at least 1 symbol")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        deduped.append(symbol)
+
+    invalid = [symbol for symbol in deduped if not _SYMBOL_RE.match(symbol)]
+    if invalid:
+        raise ValueError(
+            f"{env_name} contains invalid symbol(s): {', '.join(invalid)}"
+        )
+    if len(deduped) > max_symbols:
+        raise ValueError(
+            f"{env_name} supplied {len(deduped)} unique symbols; MAX_ANALYSIS_SYMBOLS is {max_symbols}"
+        )
+    return deduped
+
+
+def _parse_analysis_symbols(analysis_raw: str | None, fixed_six_raw: str | None, *, max_symbols: int) -> list[str]:
+    if analysis_raw is not None:
+        return _normalize_symbol_list(
+            analysis_raw,
+            env_name=ANALYSIS_SYMBOLS_ENV_VAR,
+            max_symbols=max_symbols,
+        )
+    if fixed_six_raw is not None:
+        return _normalize_symbol_list(
+            fixed_six_raw,
+            env_name=FIXED_SIX_ENV_VAR,
+            max_symbols=max_symbols,
+        )
+    return list(DEFAULT_FIXED_WATCHLIST)
+
+
 def _load_watchlist_config(base_path: Path) -> tuple[list[str], list[str], dict[str, float]]:
     cfg_path = base_path / "config" / "watchlist.json"
     if not cfg_path.exists():
@@ -172,8 +235,18 @@ def _load_watchlist_config(base_path: Path) -> tuple[list[str], list[str], dict[
 
 def load_config(base_path: Path | None = None) -> AppConfig:
     repo_root = base_path or Path(__file__).resolve().parents[2]
-    fixed, universe, weights = _load_watchlist_config(repo_root)
+    _, universe, weights = _load_watchlist_config(repo_root)
     email_to = os.getenv("EMAIL_TO", "raymond87tan@gmail.com")
+    max_analysis_symbols = _parse_positive_int(
+        os.getenv(MAX_ANALYSIS_SYMBOLS_ENV_VAR),
+        env_name=MAX_ANALYSIS_SYMBOLS_ENV_VAR,
+        default=DEFAULT_MAX_ANALYSIS_SYMBOLS,
+    )
+    fixed = _parse_analysis_symbols(
+        os.getenv(ANALYSIS_SYMBOLS_ENV_VAR),
+        os.getenv(FIXED_SIX_ENV_VAR),
+        max_symbols=max_analysis_symbols,
+    )
 
     return AppConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),

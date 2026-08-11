@@ -16,6 +16,12 @@ SessionLabel = Literal["REGULAR", "PREMARKET", "AFTER_HOURS", "OVERNIGHT_REFEREN
 class MarketData:
     symbol: str
     price: float | None = None
+    session_state: str = "CLOSED"
+    selected_data_source: str = "UNAVAILABLE"
+    selected_price_session: SessionLabel = "UNKNOWN"
+    live_regular_session: bool = False
+    live_data_required: bool = False
+    extended_hours_used: bool = False
     previous_close: float | None = None
     latest_extended_price: float | None = None
     latest_extended_session: SessionLabel = "UNKNOWN"
@@ -164,3 +170,6 @@ class DailyAnalysisReport:
     closest_short_candidate: str
     best_overall: str
     notes: list[str] = field(default_factory=list)
+    market_data_session: str = "CLOSED"
+    latest_data_source: str = "UNAVAILABLE"
+    live_regular_session: bool = False

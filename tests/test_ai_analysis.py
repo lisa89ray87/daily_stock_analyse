@@ -150,6 +150,11 @@ def test_ai_payload_structure_is_preserved():
             "main_catalyst": "Fed",
             "main_risk": "Volatility",
         },
+        "session_context": {
+            "session_state": "CLOSED",
+            "selected_data_source": "UNAVAILABLE",
+            "live_regular_session": False,
+        },
         "stocks": [
             {
                 "symbol": "AMD",
@@ -164,6 +169,11 @@ def test_ai_payload_structure_is_preserved():
                 "trading_horizon": "DAY_TRADE",
                 "day_trade_candidate": True,
                 "price": 100.0,
+                "price_session": "UNKNOWN",
+                "session_state": "CLOSED",
+                "selected_data_source": "UNAVAILABLE",
+                "live_regular_session": False,
+                "extended_hours_used": False,
                 "trend": "UPTREND",
                 "sma20": 98.0,
                 "sma50": 95.0,

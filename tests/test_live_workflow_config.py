@@ -12,6 +12,10 @@ def test_live_workflow_explicitly_enables_alert_engine_and_telegram():
     assert 'TELEGRAM_ENABLED: "1"' in wf
     assert 'TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}' in wf
     assert 'TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}' in wf
+    assert 'ANALYSIS_SYMBOLS: ${{ vars.ANALYSIS_SYMBOLS }}' in wf
+    assert 'MAX_ANALYSIS_SYMBOLS: ${{ vars.MAX_ANALYSIS_SYMBOLS }}' in wf
+    assert 'FIXED_SIX_SYMBOLS: ${{ vars.FIXED_SIX_SYMBOLS }}' in wf
+    assert 'GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}' in wf
 
 
 def test_live_workflow_uses_safe_alert_threshold_defaults():
@@ -35,3 +39,11 @@ def test_live_workflow_has_non_cancelling_concurrency_guard():
 
     assert 'group: live-stock-alerts-${{ github.ref_name }}' in wf
     assert 'cancel-in-progress: false' in wf
+
+
+def test_daily_workflow_supports_dynamic_analysis_symbol_variables():
+    wf = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "daily_stock_analysis.yml").read_text(encoding="utf-8")
+
+    assert 'ANALYSIS_SYMBOLS: ${{ vars.ANALYSIS_SYMBOLS }}' in wf
+    assert 'MAX_ANALYSIS_SYMBOLS: ${{ vars.MAX_ANALYSIS_SYMBOLS }}' in wf
+    assert 'FIXED_SIX_SYMBOLS: ${{ vars.FIXED_SIX_SYMBOLS }}' in wf

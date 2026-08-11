@@ -62,9 +62,13 @@ jobs:
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          ANALYSIS_SYMBOLS: ${{ vars.ANALYSIS_SYMBOLS }}
+          MAX_ANALYSIS_SYMBOLS: ${{ vars.MAX_ANALYSIS_SYMBOLS }}
+          FIXED_SIX_SYMBOLS: ${{ vars.FIXED_SIX_SYMBOLS }}
           MIN_SETUP_SCORE: ${{ vars.MIN_SETUP_SCORE }}
           MIN_RELATIVE_VOLUME: ${{ vars.MIN_RELATIVE_VOLUME }}
           DAY_TRADE_THRESHOLD: ${{ vars.DAY_TRADE_THRESHOLD }}

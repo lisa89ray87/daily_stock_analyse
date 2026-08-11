@@ -77,6 +77,7 @@ def test_live_evaluation_cycle_uses_selected_market_provider(tmp_path: Path):
         opening_range_window=False,
         reason="Market open",
         market_now=datetime(2026, 8, 11, 10, 0, tzinfo=UTC),
+        session_state="US_REGULAR",
     )
 
     fake_market_provider = object()
@@ -87,8 +88,9 @@ def test_live_evaluation_cycle_uses_selected_market_provider(tmp_path: Path):
 
     call_count = {"count": 0}
 
-    def _fake_analyze_symbol(symbol, cfg_obj, regime_label, sector_strength, market_provider, news_provider):
+    def _fake_analyze_symbol(symbol, cfg_obj, regime_label, sector_strength, market_provider, news_provider, now_utc=None):
         assert market_provider is fake_market_provider
+        assert now_utc == now
         call_count["count"] += 1
         raise RuntimeError("synthetic stop")
 

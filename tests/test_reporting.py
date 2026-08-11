@@ -89,6 +89,7 @@ def test_html_render_contains_header_and_mobile_table_wrapper():
     assert "Prev Close" in html
     assert "TOP OPPORTUNITIES" in html
     assert "Closest LONG Candidate" in html
+    assert "Market Data Session:" in html
 
 
 def test_html_contains_sk_hynix_labeling():
@@ -96,6 +97,7 @@ def test_html_contains_sk_hynix_labeling():
     html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
     assert "SKHY" in html
     assert "Dynamic Three" not in html
+    assert "Analysis Symbols" in html
 
 
 def test_reporting_renders_ai_overlay_in_markdown_and_html():
@@ -140,4 +142,41 @@ def test_reporting_renders_ai_overlay_in_markdown_and_html():
     assert "Avoid" in html
     assert "Key Risks" in html
     assert "Wait for confirmation" in html
+
+
+def test_reporting_does_not_claim_after_hours_is_live_regular_session():
+    report = _sample_report()
+    report.market_data_session = "AFTER_HOURS"
+    report.latest_data_source = "24-Hour / Extended Hours"
+    report.live_regular_session = False
+    report.analyses[0].market_data.session_state = "AFTER_HOURS"
+    report.analyses[0].market_data.selected_data_source = "24-Hour / Extended Hours"
+    report.analyses[0].market_data.selected_price_session = "AFTER_HOURS"
+    markdown = render_markdown(report)
+    html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
+    assert "Market Data Session: AFTER_HOURS" in markdown
+    assert "Latest Data Source: 24-Hour / Extended Hours" in markdown
+    assert "Live Regular Session: No" in markdown
+    assert "Extended-hours prices are not U.S. regular-session live prices" in html
+
+
+def test_reporting_renders_variable_number_of_analysis_symbols():
+    report = _sample_report()
+    report.fixed_symbols = ["NOK", "AMD", "NVDA"]
+    markdown3 = render_markdown(report)
+    html3 = render_html(report, Path(__file__).resolve().parents[1] / "templates")
+    assert "## ANALYSIS SYMBOLS" in markdown3
+    assert markdown3.count("- NOK") == 1
+    assert markdown3.count("- AMD") >= 1
+    assert "CONFIGURED ANALYSIS SYMBOLS" in html3
+
+    report.fixed_symbols = ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY"]
+    markdown6 = render_markdown(report)
+    assert "- SKHY" in markdown6
+
+    report.fixed_symbols = ["NOK", "AMD", "NVDA", "INTC", "SNDK", "SKHY", "AMAT", "PANW", "DDOG"]
+    html9 = render_html(report, Path(__file__).resolve().parents[1] / "templates")
+    assert "AMAT" in html9
+    assert "PANW" in html9
+    assert "DDOG" in html9
 

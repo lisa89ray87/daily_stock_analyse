@@ -74,6 +74,11 @@ def build_ai_overlay_payload(
             "main_catalyst": market_regime.main_catalyst,
             "main_risk": market_regime.main_risk,
         },
+        "session_context": {
+            "session_state": analyses[0].market_data.session_state if analyses else "CLOSED",
+            "selected_data_source": analyses[0].market_data.selected_data_source if analyses else "UNAVAILABLE",
+            "live_regular_session": analyses[0].market_data.live_regular_session if analyses else False,
+        },
         "stocks": [
             {
                 "symbol": x.symbol,
@@ -88,6 +93,11 @@ def build_ai_overlay_payload(
                 "trading_horizon": x.trading_horizon,
                 "day_trade_candidate": x.day_trade_candidate,
                 "price": x.market_data.price,
+                "price_session": x.market_data.selected_price_session,
+                "session_state": x.market_data.session_state,
+                "selected_data_source": x.market_data.selected_data_source,
+                "live_regular_session": x.market_data.live_regular_session,
+                "extended_hours_used": x.market_data.extended_hours_used,
                 "trend": x.market_data.trend,
                 "sma20": x.market_data.sma20,
                 "sma50": x.market_data.sma50,

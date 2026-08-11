@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from src.daily_stock_analyse.config import AppConfig
 from src.daily_stock_analyse.models import IntelligenceBlock, MarketData
 from src.daily_stock_analyse.runner import _analyze_symbol, _build_data_quality_warnings
@@ -64,10 +66,47 @@ def _cfg() -> AppConfig:
 
 def test_data_quality_flags_and_warnings_present():
     md = MarketData(symbol="AMD", price=100, regular_price=100, previous_close=99, overnight_reference_price=99, volume=1000000, relative_volume=1.2, provider="yfinance", data_timestamp="2026-08-10T00:00:00Z")
-    result = _analyze_symbol("AMD", _cfg(), "MIXED", 0.0, _FakeMarketProvider(md), _FakeNewsProvider())
-    assert result.data_quality.price_available is True
+    result = _analyze_symbol(
+        "AMD",
+        _cfg(),
+        "MIXED",
+        0.0,
+        _FakeMarketProvider(md),
+        _FakeNewsProvider(),
+        now_utc=datetime(2026, 8, 10, 22, 30, tzinfo=UTC),
+    )
+    assert result.data_quality.price_available is False
     assert "PREMARKET_UNAVAILABLE" in result.data_quality.warnings
     assert "INTRADAY_UNAVAILABLE" in result.data_quality.warnings
+    assert "EXTENDED_HOURS_UNAVAILABLE" in result.data_quality.warnings
+
+
+def test_after_hours_price_is_selected_outside_regular_session():
+    md = MarketData(
+        symbol="AMD",
+        price=100.0,
+        regular_price=100.0,
+        previous_close=99.0,
+        overnight_reference_price=99.0,
+        after_hours_price=101.5,
+        latest_extended_price=101.5,
+        latest_extended_session="AFTER_HOURS",
+        provider="yfinance",
+        data_timestamp="2026-08-10T00:00:00Z",
+    )
+    result = _analyze_symbol(
+        "AMD",
+        _cfg(),
+        "MIXED",
+        0.0,
+        _FakeMarketProvider(md),
+        _FakeNewsProvider(),
+        now_utc=datetime(2026, 8, 10, 22, 30, tzinfo=UTC),
+    )
+    assert result.market_data.price == 101.5
+    assert result.market_data.session_state == "AFTER_HOURS"
+    assert result.market_data.selected_data_source == "24-Hour / Extended Hours"
+    assert result.market_data.live_regular_session is False
 
 
 def test_sk_hynix_labeling():

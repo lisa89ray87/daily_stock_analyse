@@ -3,9 +3,14 @@ from pathlib import Path
 
 from src.daily_stock_analyse.config import load_config
 from src.daily_stock_analyse.market_hours import (
+    EXTENDED_HOURS_SOURCE,
+    LIVE_INTRADAY_SOURCE,
     get_market_session_status,
+    is_weekday_in_timezone,
     next_us_market_open_malaysia,
+    select_market_data_for_session,
 )
+from src.daily_stock_analyse.models import MarketData
 
 
 def test_market_open_detection():
@@ -13,6 +18,7 @@ def test_market_open_detection():
     now_utc = datetime(2026, 8, 10, 14, 0, tzinfo=UTC)
     status = get_market_session_status(now_utc, "America/New_York", "09:30", "16:00")
     assert status.market_open is True
+    assert status.session_state == "US_REGULAR"
 
 
 def test_market_closed_detection_after_hours():
@@ -20,6 +26,7 @@ def test_market_closed_detection_after_hours():
     now_utc = datetime(2026, 8, 10, 22, 30, tzinfo=UTC)
     status = get_market_session_status(now_utc, "America/New_York", "09:30", "16:00")
     assert status.market_open is False
+    assert status.session_state == "AFTER_HOURS"
 
 
 def test_weekend_detection_closed():
@@ -28,6 +35,39 @@ def test_weekend_detection_closed():
     status = get_market_session_status(now_utc, "America/New_York", "09:30", "16:00")
     assert status.market_open is False
     assert "Weekend" in status.reason
+    assert status.session_state == "CLOSED"
+
+
+def test_pre_market_detection():
+    now_utc = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    status = get_market_session_status(now_utc, "America/New_York", "09:30", "16:00")
+    assert status.market_open is False
+    assert status.session_state == "PRE_MARKET"
+
+
+def test_malaysia_weekday_detection_uses_explicit_timezone():
+    friday_utc = datetime(2026, 8, 14, 15, 0, tzinfo=UTC)
+    saturday_utc = datetime(2026, 8, 14, 16, 30, tzinfo=UTC)
+    assert is_weekday_in_timezone(friday_utc, "Asia/Kuala_Lumpur") is True
+    assert is_weekday_in_timezone(saturday_utc, "Asia/Kuala_Lumpur") is False
+
+
+def test_extended_hours_selection_when_regular_market_closed():
+    md = MarketData(after_hours_price=101.25, latest_extended_price=101.25, latest_extended_session="AFTER_HOURS", symbol="AMD")
+    session = get_market_session_status(datetime(2026, 8, 10, 22, 30, tzinfo=UTC), "America/New_York", "09:30", "16:00")
+    selected = select_market_data_for_session(md, session)
+    assert selected.selected_price == 101.25
+    assert selected.selected_data_source == EXTENDED_HOURS_SOURCE
+    assert selected.live_regular_session is False
+
+
+def test_live_data_selection_during_us_regular_hours():
+    md = MarketData(symbol="AMD", price=100.0, regular_price=100.5, intraday_timestamp="2026-08-10T14:00:00Z")
+    session = get_market_session_status(datetime(2026, 8, 10, 14, 0, tzinfo=UTC), "America/New_York", "09:30", "16:00")
+    selected = select_market_data_for_session(md, session)
+    assert selected.selected_price == 100.5
+    assert selected.selected_data_source == LIVE_INTRADAY_SOURCE
+    assert selected.live_regular_session is True
 
 
 def test_dst_handling_for_next_open_in_malaysia_changes_hour():

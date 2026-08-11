@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from .config import AppConfig, load_config
 from .market import build_market_regime
-from .market_hours import MarketSessionStatus, get_market_session_status, utc_now
+from .market_hours import MarketSessionStatus, get_market_session_status, is_weekday_in_timezone, utc_now
 from .models import StockAnalysis
 from .providers import YFinanceNewsProvider, create_market_data_provider
 from .runner import _analyze_symbol
@@ -107,6 +107,12 @@ def run_live_alerts(base_path: Path | None = None) -> int:
     evaluation_count = 0
     while True:
         now = utc_now()
+        if not is_weekday_in_timezone(now, cfg.morning_report_timezone):
+            print(f"Outside Monday-Friday Malaysia schedule | now={now.astimezone(ZoneInfo(cfg.morning_report_timezone)).isoformat()}")
+            _write_live_snapshot(repo_root, {"market_open": False, "reason": "Outside Monday-Friday Malaysia schedule", "alerts": []})
+            print("Live alert service stopped cleanly")
+            return 0
+
         session = get_market_session_status(
             now,
             market_timezone=cfg.live_market_timezone,
@@ -114,41 +120,16 @@ def run_live_alerts(base_path: Path | None = None) -> int:
             market_close_hhmm=cfg.live_market_close,
         )
 
-        if not session.market_open:
-            if _is_pre_market_wait_state(session):
-                wait_seconds = _seconds_until_market_open_or_interval(session, interval_minutes)
-                print(
-                    f"Waiting for market open... now={session.market_now.isoformat()} | "
-                    f"next_open={session.market_open_time.isoformat() if session.market_open_time else 'UNKNOWN'} | "
-                    f"sleep={wait_seconds}s"
-                )
-                time_module.sleep(wait_seconds)
-                continue
-
-            print(f"Market closed: {session.reason} | now={session.market_now.isoformat()}")
-            _write_live_snapshot(repo_root, {"market_open": False, "reason": session.reason, "alerts": []})
-            print("Live alert service stopped cleanly")
-            return 0
-
         evaluation_count += 1
-        print(f"Market is open | Evaluation #{evaluation_count} started | New York time {session.market_now.isoformat()}")
+        print(
+            f"Evaluation #{evaluation_count} started | session={session.session_state} | "
+            f"New York time {session.market_now.isoformat()}"
+        )
 
         try:
             _run_live_alert_evaluation_cycle(repo_root, cfg, now, session)
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             print(f"Evaluation #{evaluation_count} failed: {exc}")
-
-        latest_session = get_market_session_status(
-            utc_now(),
-            market_timezone=cfg.live_market_timezone,
-            market_open_hhmm=cfg.live_market_open,
-            market_close_hhmm=cfg.live_market_close,
-        )
-        if not latest_session.market_open:
-            print(f"Market closed: {latest_session.reason} | now={latest_session.market_now.isoformat()}")
-            _write_live_snapshot(repo_root, {"market_open": False, "reason": latest_session.reason, "alerts": []})
-            print("Live alert service stopped cleanly")
-            return 0
 
         sleep_seconds = interval_minutes * 60
         print(
@@ -195,7 +176,7 @@ def _run_live_alert_evaluation_cycle(
     analyses: list[StockAnalysis] = []
     for symbol in symbols:
         try:
-            analyses.append(_analyze_symbol(symbol, cfg, regime.label, sector_strength, market_provider, news_provider))
+            analyses.append(_analyze_symbol(symbol, cfg, regime.label, sector_strength, market_provider, news_provider, now_utc=now))
         except Exception as exc:  # pragma: no cover - defensive runtime guard
             print(f"{symbol}: live analysis failed ({exc})")
 
@@ -222,6 +203,7 @@ def _run_live_alert_evaluation_cycle(
         {
             "market_open": True,
             "market_reason": session.reason,
+            "market_session": session.session_state,
             "v4_phase": phase,
             "opening_range_window": session.opening_range_window,
             "market_time": session.market_now.isoformat(),
