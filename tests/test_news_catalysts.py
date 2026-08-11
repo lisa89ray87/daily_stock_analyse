@@ -63,5 +63,5 @@ def test_news_provider_returns_news_unavailable_when_no_usable_headlines(monkeyp
     intelligence = YFinanceNewsProvider().get_news("AMD")
 
     assert intelligence.news_available is False
-    assert intelligence.catalyst_status == "NEWS_UNAVAILABLE"
-    assert intelligence.upcoming_catalysts == ["NEWS_UNAVAILABLE"]
+    assert intelligence.catalyst_status == "NO_RECENT_NEWS"
+    assert intelligence.upcoming_catalysts == ["NO_RECENT_NEWS"]

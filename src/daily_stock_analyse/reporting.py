@@ -93,7 +93,7 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
                 f"- {item.symbol} | {item.category} | {item.catalyst_direction} | {item.importance} | {source} | {published} | {item.headline}"
             )
     else:
-        lines.append("- NO_MATERIAL_CATALYST")
+        lines.append(f"- {_empty_news_status(report)}")
 
     lines.append("\n## Historical Outcomes And Backtest")
     if report.historical_performance:
@@ -247,3 +247,12 @@ def _fmt(value: float | None) -> str:
     if value is None:
         return "UNAVAILABLE"
     return f"{value:.2f}"
+
+
+def _empty_news_status(report: DailyAnalysisReport) -> str:
+    statuses = {x.intelligence.catalyst_status for x in report.analyses}
+    if "NO_MATERIAL_CATALYST" in statuses:
+        return "NO_MATERIAL_CATALYST"
+    if any(x.intelligence.news_available for x in report.analyses):
+        return "NO_MATERIAL_CATALYST"
+    return "NO_RECENT_NEWS"

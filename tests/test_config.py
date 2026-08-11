@@ -66,6 +66,23 @@ def test_threshold_overrides(monkeypatch):
     assert cfg.telegram_chat_id == "chat-1"
 
 
+def test_news_search_overrides(monkeypatch):
+    monkeypatch.setenv("NEWS_PROVIDER", "yfinance,searxng")
+    monkeypatch.setenv("SEARXNG_BASE_URLS", "https://searx-a.example, https://searx-b.example/")
+    monkeypatch.setenv("SEARXNG_PUBLIC_INSTANCES_ENABLED", "0")
+    monkeypatch.setenv("SEARXNG_TIMEOUT_SECONDS", "6")
+    monkeypatch.setenv("NEWS_MAX_AGE_HOURS", "36")
+
+    cfg = load_config(Path(__file__).resolve().parents[1])
+
+    assert cfg.news_provider == "yfinance,searxng"
+    assert cfg.searxng_base_urls == ["https://searx-a.example", "https://searx-b.example"]
+    assert cfg.searxng_public_instances_enabled is False
+    assert cfg.searxng_timeout_seconds == 6
+    assert cfg.news_max_age_hours == 36
+    assert cfg.news_lookback_hours == 36
+
+
 def test_morning_timezone_missing_uses_kuala_lumpur(monkeypatch):
     monkeypatch.delenv("MORNING_REPORT_TIMEZONE", raising=False)
     cfg = load_config(Path(__file__).resolve().parents[1])

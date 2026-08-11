@@ -50,7 +50,12 @@ def analyze_symbol(
     intelligence = apply_news_lookback(intelligence, cfg.news_lookback_hours)
 
     if not intelligence.upcoming_catalysts:
-        intelligence.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
+        if intelligence.news_available:
+            intelligence.catalyst_status = "NO_MATERIAL_CATALYST"
+            intelligence.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
+        else:
+            intelligence.catalyst_status = "NO_RECENT_NEWS"
+            intelligence.upcoming_catalysts = ["NO_RECENT_NEWS"]
 
     score = score_stock(md, intelligence, cfg.score_weights)
     decision = decide_signal(score, md, cfg, regime_label, sector_strength)
@@ -134,9 +139,9 @@ def apply_news_lookback(intelligence: IntelligenceBlock, lookback_hours: int) ->
 
     if not filtered:
         intelligence.news_available = False
-        intelligence.facts = ["NEWS_UNAVAILABLE"]
-        intelligence.catalyst_status = "NEWS_UNAVAILABLE"
-        intelligence.upcoming_catalysts = ["NEWS_UNAVAILABLE"]
+        intelligence.facts = ["NO_RECENT_NEWS"]
+        intelligence.catalyst_status = "NO_RECENT_NEWS"
+        intelligence.upcoming_catalysts = ["NO_RECENT_NEWS"]
         return intelligence
 
     material = [x for x in filtered if x.category != "NONE"]

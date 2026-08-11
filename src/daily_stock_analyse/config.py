@@ -87,6 +87,10 @@ class AppConfig:
     database_url: str | None = None
     enable_news: bool = True
     news_lookback_hours: int = 24
+    news_max_age_hours: int = 24
+    searxng_base_urls: list[str] = None
+    searxng_public_instances_enabled: bool = True
+    searxng_timeout_seconds: int = 8
     enable_outcome_tracking: bool = True
     enable_backtest: bool = True
     signal_db_path: str = "artifacts/signal_history.db"
@@ -148,6 +152,18 @@ def _normalize_fraction_threshold(value: float) -> float:
     if value > 1.0:
         return value / 100.0
     return value
+
+
+def _env_csv_urls(name: str, default: list[str] | None = None) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default or [])
+    out: list[str] = []
+    for part in raw.split(","):
+        value = part.strip().rstrip("/")
+        if value:
+            out.append(value)
+    return out
 
 
 def _parse_positive_int(raw: str | None, *, env_name: str, default: int) -> int:
@@ -256,6 +272,8 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         max_symbols=max_analysis_symbols,
     )
 
+    news_max_age_hours = _env_int("NEWS_MAX_AGE_HOURS", _env_int("NEWS_LOOKBACK_HOURS", 24))
+
     return AppConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
@@ -294,7 +312,11 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         database_enabled=_env_flag("DATABASE_ENABLED", True),
         database_url=os.getenv("DATABASE_URL"),
         enable_news=_env_flag("ENABLE_NEWS", True),
-        news_lookback_hours=_env_int("NEWS_LOOKBACK_HOURS", 24),
+        news_lookback_hours=news_max_age_hours,
+        news_max_age_hours=news_max_age_hours,
+        searxng_base_urls=_env_csv_urls("SEARXNG_BASE_URLS", []),
+        searxng_public_instances_enabled=_env_flag("SEARXNG_PUBLIC_INSTANCES_ENABLED", True),
+        searxng_timeout_seconds=_env_int("SEARXNG_TIMEOUT_SECONDS", 8),
         enable_outcome_tracking=_env_flag("ENABLE_OUTCOME_TRACKING", True),
         enable_backtest=_env_flag("ENABLE_BACKTEST", True),
         signal_db_path=_env_nonempty_str("SIGNAL_DB_PATH", "artifacts/signal_history.db"),

@@ -182,25 +182,27 @@ class YFinanceNewsProvider(NewsProvider):
             news = ticker.news or []
         except Exception:
             out.news_available = False
-            out.facts.append("NEWS_UNAVAILABLE")
+            out.facts.append("NO_RECENT_NEWS")
             out.interpretation.append("Proceed with technical-only analysis")
-            out.catalyst_status = "NEWS_UNAVAILABLE"
+            out.catalyst_status = "NO_RECENT_NEWS"
+            out.upcoming_catalysts = ["NO_RECENT_NEWS"]
             return out
 
         if not news:
             out.news_available = False
-            out.facts.append("NEWS_UNAVAILABLE")
+            out.facts.append("NO_RECENT_NEWS")
             out.interpretation.append("Catalyst visibility is low")
-            out.catalyst_status = "NEWS_UNAVAILABLE"
+            out.catalyst_status = "NO_RECENT_NEWS"
+            out.upcoming_catalysts = ["NO_RECENT_NEWS"]
             return out
 
         candidates = _extract_valid_news_items(symbol, news, limit=limit)
         if not candidates:
             out.news_available = False
-            out.facts.append("NEWS_UNAVAILABLE")
+            out.facts.append("NO_RECENT_NEWS")
             out.interpretation.append("No recent usable provider headlines were available")
-            out.catalyst_status = "NEWS_UNAVAILABLE"
-            out.upcoming_catalysts = ["NEWS_UNAVAILABLE"]
+            out.catalyst_status = "NO_RECENT_NEWS"
+            out.upcoming_catalysts = ["NO_RECENT_NEWS"]
             return out
 
         for item in candidates:

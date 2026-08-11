@@ -263,3 +263,27 @@ def test_reporting_renders_real_catalyst_metadata_without_untitled_placeholder()
     assert "AMD beats earnings and raises guidance" in html
     assert "https://example.com/amd" in html
 
+
+def test_reporting_shows_no_recent_news_when_no_news_available():
+    report = _sample_report()
+    report.news_catalysts = []
+    for item in report.analyses:
+        item.intelligence.news_available = False
+        item.intelligence.catalyst_status = "NO_RECENT_NEWS"
+
+    markdown = render_markdown(report)
+
+    assert "- NO_RECENT_NEWS" in markdown
+
+
+def test_reporting_shows_no_material_catalyst_when_news_exists_without_material_signal():
+    report = _sample_report()
+    report.news_catalysts = []
+    for item in report.analyses:
+        item.intelligence.news_available = True
+        item.intelligence.catalyst_status = "NO_MATERIAL_CATALYST"
+
+    markdown = render_markdown(report)
+
+    assert "- NO_MATERIAL_CATALYST" in markdown
+

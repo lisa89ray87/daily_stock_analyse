@@ -41,7 +41,13 @@ def run_analysis(base_path: Path | None = None) -> int:
     )
 
     market_provider = create_market_data_provider(cfg.data_provider)
-    news_provider = create_news_provider(cfg.news_provider)
+    news_provider = create_news_provider(
+        cfg.news_provider,
+        searxng_base_urls=cfg.searxng_base_urls,
+        searxng_timeout_seconds=cfg.searxng_timeout_seconds,
+        searxng_public_instances_enabled=cfg.searxng_public_instances_enabled,
+        news_max_age_hours=cfg.news_max_age_hours,
+    )
 
     market_regime = build_market_regime()
     sector_strength = market_regime.indicators.get("semiconductor_etf_change_pct")
