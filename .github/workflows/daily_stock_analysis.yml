@@ -31,43 +31,43 @@ jobs:
         id: report_window
         run: |
           python - <<'PY'
-          from datetime import datetime, timedelta
+          import os
+          from datetime import datetime
           from zoneinfo import ZoneInfo
 
           now = datetime.now(ZoneInfo("America/New_York"))
+          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
           targets = {
               (9, 30): "US_MARKET_OPEN",
               (16, 0): "US_MARKET_CLOSE",
           }
+
           target = targets.get((now.hour, now.minute))
 
           # GitHub scheduled workflows can start a few minutes late. Allow a
-          # 20-minute execution window while preventing the alternate DST
-          # schedule from producing a duplicate report an hour away.
+          # 20-minute window around the intended NY open/close while preventing
+          # the alternate DST schedule from producing a duplicate report.
           if target is None:
-              target_dt = min(
+              distances = [
                   (
-                      now.replace(hour=hour, minute=minute, second=0, microsecond=0),
+                      abs((now - now.replace(hour=hour, minute=minute, second=0, microsecond=0)).total_seconds()),
                       name,
                   )
                   for (hour, minute), name in targets.items()
-              )
-              distances = [
-                  (abs((now - dt).total_seconds()), name)
-                  for dt, name in [
-                      (now.replace(hour=hour, minute=minute, second=0, microsecond=0), name)
-                      for (hour, minute), name in targets.items()
-                  ]
               ]
-              distance_seconds, target = min(distances)
-              if distance_seconds > 20 * 60:
-                  target = ""
+              distance_seconds, nearest_target = min(distances)
+              if distance_seconds <= 20 * 60:
+                  target = nearest_target
+
+          if manual:
+              target = "MANUAL"
 
           print(f"New York time: {now.isoformat()}")
           print(f"Report window: {target or 'SKIP'}")
-          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as fh:
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"run={'true' if target else 'false'}\n")
-              fh.write(f"report_window={target}\n")
+              fh.write(f"report_window={target or ''}\n")
+          PY
 
       - name: Install dependencies
         if: steps.report_window.outputs.run == 'true'
