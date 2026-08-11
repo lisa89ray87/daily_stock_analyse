@@ -4,7 +4,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.daily_stock_analyse.ai_providers.openai_provider import OpenAIOverlayProvider
+from src.daily_stock_analyse.ai_providers.base import AIProviderError
+from src.daily_stock_analyse.ai_providers.openai_provider import OpenAIOverlayProvider, _classify_openai_error
 
 
 def test_openai_provider_bounds_request_timeout_and_sdk_retries():
@@ -31,14 +32,13 @@ def test_openai_provider_bounds_request_timeout_and_sdk_retries():
     assert captured["request"]["model"] == "gpt-5-mini"
 
 
-def test_openai_provider_classifies_429_as_fallback_eligible():
-    provider = OpenAIOverlayProvider("test-key")
-
+def test_openai_provider_classifies_429_for_fast_fallback():
     class _RateLimitError(Exception):
         status_code = 429
 
-    try:
-        provider._classify_openai_error(_RateLimitError("429"))
-    except AttributeError:
-        # The classifier is intentionally module-level; exercise it through a real request failure below.
-        pass
+    error = _classify_openai_error(_RateLimitError("429"))
+
+    assert isinstance(error, AIProviderError)
+    assert error.category == "quota_or_rate_limit"
+    assert error.status_code == 429
+    assert error.fallback_eligible is True
