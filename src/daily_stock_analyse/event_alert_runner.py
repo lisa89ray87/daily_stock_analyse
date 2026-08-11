@@ -28,6 +28,11 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _startup(stage: str, status: str = "OK", **fields: object) -> None:
+    suffix = "".join(f" | {key}={value}" for key, value in fields.items())
+    print(f"EVENT_ALERT_STARTUP | stage={stage} | status={status}{suffix}", flush=True)
+
+
 def _load_state(path: Path) -> dict:
     if not path.exists():
         return {"symbols": {}}
@@ -77,33 +82,64 @@ def _message(events: list[EventAlert], market_time: str) -> str:
 
 def run_event_alerts(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
-    cfg = load_config(repo_root)
+    _startup("begin", repo_root=repo_root)
+
+    try:
+        cfg = load_config(repo_root)
+        _startup("config", live_provider=cfg.live_data_provider, timezone=cfg.live_market_timezone)
+    except Exception as exc:
+        _startup("config", "ERROR", error=repr(exc))
+        raise
+
     if not _flag("EVENT_ALERT_ENABLED", True):
-        print("EVENT_ALERT_ENABLED=0, exiting without event alerts.")
+        print("EVENT_ALERT_ENABLED=0, exiting without event alerts.", flush=True)
         return 0
 
     interval = max(1, _int("EVENT_ALERT_INTERVAL_MINUTES", 5))
     cooldown = max(0, _int("EVENT_ALERT_COOLDOWN_MINUTES", 15))
     state_path = repo_root / "artifacts" / "event_alert_state.json"
-    state = _load_state(state_path)
-    telegram = TelegramBotProvider(
-        enabled=cfg.telegram_enabled,
-        bot_token=cfg.telegram_bot_token,
-        chat_id=cfg.telegram_chat_id,
-    )
-    provider = create_market_data_provider(cfg.live_data_provider)
+
+    try:
+        state = _load_state(state_path)
+        _startup("state", path=state_path, symbols=len(state.get("symbols", {})))
+    except Exception as exc:
+        _startup("state", "ERROR", error=repr(exc))
+        raise
+
+    try:
+        telegram = TelegramBotProvider(
+            enabled=cfg.telegram_enabled,
+            bot_token=cfg.telegram_bot_token,
+            chat_id=cfg.telegram_chat_id,
+        )
+        _startup("telegram", configured=telegram.is_configured)
+    except Exception as exc:
+        _startup("telegram", "ERROR", error=repr(exc))
+        raise
+
+    try:
+        provider = create_market_data_provider(cfg.live_data_provider)
+        _startup("market_provider", provider=cfg.live_data_provider)
+    except Exception as exc:
+        _startup("market_provider", "ERROR", error=repr(exc))
+        raise
+
     symbols = list(dict.fromkeys(cfg.fixed_watchlist + cfg.candidate_universe))
+    _startup("symbols", count=len(symbols), symbols=",".join(symbols))
 
-    print("Live event alert service started")
-    print(f"Timezone: {cfg.live_market_timezone}")
-    print(f"Evaluation interval: {interval} minutes")
-    print(f"Event cooldown: {cooldown} minutes")
-    print(f"Symbols: {len(symbols)}")
+    print("Live event alert service started", flush=True)
+    print(f"Timezone: {cfg.live_market_timezone}", flush=True)
+    print(f"Evaluation interval: {interval} minutes", flush=True)
+    print(f"Event cooldown: {cooldown} minutes", flush=True)
+    print(f"Symbols: {len(symbols)}", flush=True)
+    _startup("ready")
 
+    cycle = 0
     while True:
+        cycle += 1
         now = utc_now()
         if not is_weekday_in_timezone(now, cfg.live_market_timezone):
-            print("Outside Monday-Friday schedule; event alert service stopped cleanly")
+            print("Outside Monday-Friday schedule; event alert service stopped cleanly", flush=True)
             return 0
 
         session = get_market_session_status(
@@ -112,14 +148,18 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             market_open_hhmm=cfg.live_market_open,
             market_close_hhmm=cfg.live_market_close,
         )
-        print(f"EVENT_ALERT_EVALUATION | session={session.session_state} | New York={session.market_now.isoformat()}")
+        print(
+            f"EVENT_ALERT_EVALUATION | cycle={cycle} | session={session.session_state} | "
+            f"New York={session.market_now.isoformat()}",
+            flush=True,
+        )
 
         if session.session_state == "AFTER_HOURS":
-            print("EVENT_ALERT_EVALUATION | regular-session window ended; event alert service stopped cleanly")
+            print("EVENT_ALERT_EVALUATION | regular-session window ended; event alert service stopped cleanly", flush=True)
             return 0
 
         if session.session_state != "US_REGULAR":
-            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR session")
+            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR session", flush=True)
             time.sleep(interval * 60)
             continue
 
@@ -127,10 +167,14 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         detected = 0
         suppressed = 0
         for symbol in symbols:
+            print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=start", flush=True)
             try:
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_start", flush=True)
                 md = provider.get_market_data(symbol)
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_complete", flush=True)
                 analysis = SimpleNamespace(symbol=symbol, market_data=md)
                 events = detect_event_alerts(analysis, cfg)
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)}", flush=True)
                 detected += len(events)
                 for event in events:
                     if _is_suppressed(state, event, now, cooldown):
@@ -138,12 +182,13 @@ def run_event_alerts(base_path: Path | None = None) -> int:
                         continue
                     pending.append(event)
             except Exception as exc:
-                print(f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={exc}")
+                print(f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={exc}", flush=True)
 
         print(
             f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | "
             f"pending={len(pending)} | cooldown_suppressed={suppressed} | "
-            f"telegram_configured={telegram.is_configured}"
+            f"telegram_configured={telegram.is_configured}",
+            flush=True,
         )
 
         if pending:
@@ -151,13 +196,14 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             result = telegram.send_message(message)
             print(
                 f"EVENT_ALERT_TELEGRAM | attempted=True | success={result.success} | "
-                f"status_code={result.status_code} | error={result.error or 'NONE'}"
+                f"status_code={result.status_code} | error={result.error or 'NONE'}",
+                flush=True,
             )
             if result.success:
                 for event in pending:
                     _mark_sent(state, event, now)
         else:
-            print("EVENT_ALERT_TELEGRAM | attempted=False | reason=NO_NEW_EVENTS")
+            print("EVENT_ALERT_TELEGRAM | attempted=False | reason=NO_NEW_EVENTS", flush=True)
 
         state["updated_at"] = now.isoformat()
         _save_state(state_path, state)
