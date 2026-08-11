@@ -2,39 +2,79 @@ name: Daily Stock Analysis
 
 on:
   workflow_dispatch:
+  # GitHub cron is UTC and does not adjust for U.S. daylight saving time.
+  # Run at both possible NY open/close UTC times, then gate execution against
+  # the actual America/New_York clock so exactly one open and one close report
+  # is generated on normal weekdays year-round.
   schedule:
-    - cron: "0 0 * * 1-5"
+    - cron: "30 13 * * 1-5" # 09:30 ET during EDT
+    - cron: "30 14 * * 1-5" # 09:30 ET during EST
+    - cron: "0 20 * * 1-5"  # 16:00 ET during EDT
+    - cron: "0 21 * * 1-5"  # 16:00 ET during EST
+
+env:
+  SEND_EMAIL: "1"
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    env:
-      SEND_EMAIL: "1"
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Determine report window
+
+      - name: Determine U.S. market report window
         id: report_window
         run: |
           python - <<'PY'
           import os
           from datetime import datetime
           from zoneinfo import ZoneInfo
-          event = os.environ.get("GITHUB_EVENT_NAME", "")
+
           now = datetime.now(ZoneInfo("America/New_York"))
-          target = "MANUAL" if event == "workflow_dispatch" else "SCHEDULED"
+          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+          targets = {
+              (9, 30): "US_MARKET_OPEN",
+              (16, 0): "US_MARKET_CLOSE",
+          }
+
+          target = targets.get((now.hour, now.minute))
+
+          # GitHub scheduled workflows can start a few minutes late. Allow a
+          # 20-minute window around the intended NY open/close while preventing
+          # the alternate DST schedule from producing a duplicate report.
+          if target is None:
+              distances = [
+                  (
+                      abs((now - now.replace(hour=hour, minute=minute, second=0, microsecond=0)).total_seconds()),
+                      name,
+                  )
+                  for (hour, minute), name in targets.items()
+              ]
+              distance_seconds, nearest_target = min(distances)
+              if distance_seconds <= 20 * 60:
+                  target = nearest_target
+
+          if manual:
+              target = "MANUAL"
+
+          print(f"New York time: {now.isoformat()}")
+          print(f"Report window: {target or 'SKIP'}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write("run=true\n")
-              fh.write(f"report_window={target}\n")
+              fh.write(f"run={'true' if target else 'false'}\n")
+              fh.write(f"report_window={target or ''}\n")
           PY
+
       - name: Install dependencies
         if: steps.report_window.outputs.run == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Run analysis
         if: steps.report_window.outputs.run == 'true'
         env:
@@ -70,13 +110,20 @@ jobs:
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
           NEWS_PROVIDER: "yfinance,google_rss,bing_rss"
+          NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
           NEWS_DIAGNOSTICS: "1"
-          NEWS_MAX_AGE_HOURS: ${{ vars.NEWS_MAX_AGE_HOURS }}
+          DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}
+          ENABLE_OUTCOME_TRACKING: ${{ vars.ENABLE_OUTCOME_TRACKING }}
+          ENABLE_BACKTEST: ${{ vars.ENABLE_BACKTEST }}
+          SIGNAL_DB_PATH: ${{ vars.SIGNAL_DB_PATH }}
+          SIGNAL_EXPIRY_HOURS: ${{ vars.SIGNAL_EXPIRY_HOURS }}
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           REPORT_WINDOW: ${{ steps.report_window.outputs.report_window }}
         run: python -m src.daily_stock_analyse
-      - name: Upload report
+
+      - name: Upload report artifacts
+        if: always()
         uses: actions/upload-artifact@v5
         with:
           name: daily-stock-analysis-report
           path: artifacts/
-          if-no-files-found: warn
