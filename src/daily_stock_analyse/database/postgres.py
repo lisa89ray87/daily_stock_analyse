@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from ..models import MarketRegime, StockAnalysis
 from .connection import postgres_connection
@@ -53,6 +53,7 @@ class PostgresSignalRepository:
 
         with postgres_connection(self.database_url) as conn:
             with conn.cursor() as cur:
+                signal_id_strategy = _signal_id_insert_strategy(cur)
                 cur.execute(
                     """
                     INSERT INTO analysis_runs (run_id, generated_at, market_session, market_regime, data_source)
@@ -66,68 +67,77 @@ class PostgresSignalRepository:
                     if analysis.signal not in {"LONG", "SHORT"}:
                         continue
                     catalyst = analysis.intelligence.structured_catalysts[0] if analysis.intelligence.structured_catalysts else None
+                    signal_id_value = uuid4() if signal_id_strategy["requires_explicit_value"] else None
+                    columns = [
+                        "run_id",
+                        "symbol",
+                        "direction",
+                        "status",
+                        "confidence",
+                        "entry_price",
+                        "entry_trigger_price",
+                        "target_1",
+                        "target_2",
+                        "invalidation_price",
+                        "stop_loss",
+                        "catalyst",
+                        "catalyst_status",
+                        "catalyst_category",
+                        "catalyst_direction",
+                        "ai_provider",
+                        "triggered",
+                        "triggered_at",
+                        "return_pct",
+                        "mfe_pct",
+                        "mae_pct",
+                        "holding_minutes",
+                        "expiry_at",
+                        "market_regime_label",
+                        "created_at",
+                        "updated_at",
+                    ]
+                    values = [
+                        run_id,
+                        analysis.symbol,
+                        analysis.signal,
+                        "OPEN",
+                        analysis.confidence,
+                        None,
+                        analysis.battle_plan.entry_trigger_price,
+                        analysis.battle_plan.target_1,
+                        analysis.battle_plan.target_2,
+                        analysis.battle_plan.invalidation_price,
+                        analysis.battle_plan.invalidation_price,
+                        catalyst.headline if catalyst else None,
+                        analysis.intelligence.catalyst_status,
+                        catalyst.category if catalyst else "NONE",
+                        catalyst.catalyst_direction if catalyst else "UNKNOWN",
+                        ai_provider or "UNAVAILABLE",
+                        False,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        expiry_at,
+                        regime.label,
+                        generated_at_utc,
+                        generated_at_utc,
+                    ]
+                    if signal_id_value is not None:
+                        columns.insert(0, "signal_id")
+                        values.insert(0, signal_id_value)
+
                     cur.execute(
-                        """
+                        f"""
                         INSERT INTO signals (
-                            run_id,
-                            symbol,
-                            direction,
-                            status,
-                            confidence,
-                            entry_price,
-                            entry_trigger_price,
-                            target_1,
-                            target_2,
-                            invalidation_price,
-                            stop_loss,
-                            catalyst,
-                            catalyst_status,
-                            catalyst_category,
-                            catalyst_direction,
-                            ai_provider,
-                            triggered,
-                            triggered_at,
-                            return_pct,
-                            mfe_pct,
-                            mae_pct,
-                            holding_minutes,
-                            expiry_at,
-                            market_regime_label,
-                            created_at,
-                            updated_at
+                            {', '.join(columns)}
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            {', '.join(['%s'] * len(columns))}
                         )
                         ON CONFLICT (run_id, symbol, direction) DO NOTHING
                         """,
-                        (
-                            run_id,
-                            analysis.symbol,
-                            analysis.signal,
-                            "OPEN",
-                            analysis.confidence,
-                            None,
-                            analysis.battle_plan.entry_trigger_price,
-                            analysis.battle_plan.target_1,
-                            analysis.battle_plan.target_2,
-                            analysis.battle_plan.invalidation_price,
-                            analysis.battle_plan.invalidation_price,
-                            catalyst.headline if catalyst else None,
-                            analysis.intelligence.catalyst_status,
-                            catalyst.category if catalyst else "NONE",
-                            catalyst.catalyst_direction if catalyst else "UNKNOWN",
-                            ai_provider or "UNAVAILABLE",
-                            False,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            expiry_at,
-                            regime.label,
-                            generated_at_utc,
-                            generated_at_utc,
-                        ),
+                        values,
                     )
                     persisted += max(0, cur.rowcount)
             conn.commit()
@@ -268,3 +278,20 @@ class PostgresSignalRepository:
         key = f"{generated_at_utc.isoformat()}|{market_session}|{market_regime}|{data_source}"
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return f"run_{digest[:24]}"
+
+
+def _signal_id_insert_strategy(cur) -> dict[str, bool]:
+    cur.execute(
+        """
+        SELECT data_type, udt_name, column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'signals' AND column_name = 'signal_id'
+        """
+    )
+    row = cur.fetchone() or {}
+    data_type = str(row.get("data_type") or "").lower()
+    udt_name = str(row.get("udt_name") or "").lower()
+    default = str(row.get("column_default") or "").strip().lower()
+    is_uuid = data_type == "uuid" or udt_name == "uuid"
+    requires_explicit_value = is_uuid and not default
+    return {"requires_explicit_value": requires_explicit_value}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from src.daily_stock_analyse.database.postgres import PostgresSignalRepository
 from src.daily_stock_analyse.models import (
@@ -31,6 +32,11 @@ class _FakeCursor:
         q = " ".join(query.split()).lower()
         self.rowcount = 0
 
+        if "from information_schema.columns" in q and "table_name = 'signals'" in q and "column_name = 'signal_id'" in q:
+            profile = self.state.get("signal_id_profile", {"data_type": "bigint", "udt_name": "int8", "column_default": "nextval"})
+            self.rows = [profile]
+            return self
+
         if "insert into analysis_runs" in q:
             run_id = params[0]
             if run_id not in self.state["analysis_runs"]:
@@ -45,35 +51,56 @@ class _FakeCursor:
             return self
 
         if "insert into signals" in q:
-            run_id, symbol, direction = params[0], params[1], params[2]
+            explicit_signal_id = "insert into signals ( signal_id," in q or "insert into signals ( signal_id, run_id," in q
+            signal_id = params[0] if explicit_signal_id else self.state["next_signal_id"]
+            run_id = params[1] if explicit_signal_id else params[0]
+            symbol = params[2] if explicit_signal_id else params[1]
+            direction = params[3] if explicit_signal_id else params[2]
             key = (run_id, symbol, direction)
             if key in self.state["signal_key_index"]:
                 self.rowcount = 0
                 return self
-            signal_id = self.state["next_signal_id"]
-            self.state["next_signal_id"] += 1
+            if not explicit_signal_id:
+                self.state["next_signal_id"] += 1
+            confidence_index = 5 if explicit_signal_id else 4
+            status_index = 4 if explicit_signal_id else 3
+            entry_trigger_index = 7 if explicit_signal_id else 6
+            target_1_index = 8 if explicit_signal_id else 7
+            target_2_index = 9 if explicit_signal_id else 8
+            invalidation_index = 10 if explicit_signal_id else 9
+            stop_loss_index = 11 if explicit_signal_id else 10
+            triggered_index = 17 if explicit_signal_id else 16
+            triggered_at_index = 18 if explicit_signal_id else 17
+            return_pct_index = 19 if explicit_signal_id else 18
+            mfe_pct_index = 20 if explicit_signal_id else 19
+            mae_pct_index = 21 if explicit_signal_id else 20
+            holding_minutes_index = 22 if explicit_signal_id else 21
+            expiry_index = 23 if explicit_signal_id else 22
+            regime_index = 24 if explicit_signal_id else 23
+            catalyst_category_index = 14 if explicit_signal_id else 13
+            created_index = 25 if explicit_signal_id else 24
             record = {
                 "signal_id": signal_id,
                 "run_id": run_id,
                 "symbol": symbol,
                 "signal": direction,
-                "status": params[3],
-                "confidence": params[4],
-                "entry_trigger_price": params[6],
-                "target_1": params[7],
-                "target_2": params[8],
-                "stop_loss": params[10],
-                "invalidation_price": params[9],
-                "triggered": params[16],
-                "triggered_at": params[17],
-                "return_pct": params[18],
-                "mfe_pct": params[19],
-                "mae_pct": params[20],
-                "holding_minutes": params[21],
-                "expiry_at": params[22],
-                "market_regime_label": params[23],
-                "catalyst_category": params[13],
-                "created_at": params[24],
+                "status": params[status_index],
+                "confidence": params[confidence_index],
+                "entry_trigger_price": params[entry_trigger_index],
+                "target_1": params[target_1_index],
+                "target_2": params[target_2_index],
+                "stop_loss": params[stop_loss_index],
+                "invalidation_price": params[invalidation_index],
+                "triggered": params[triggered_index],
+                "triggered_at": params[triggered_at_index],
+                "return_pct": params[return_pct_index],
+                "mfe_pct": params[mfe_pct_index],
+                "mae_pct": params[mae_pct_index],
+                "holding_minutes": params[holding_minutes_index],
+                "expiry_at": params[expiry_index],
+                "market_regime_label": params[regime_index],
+                "catalyst_category": params[catalyst_category_index],
+                "created_at": params[created_index],
             }
             self.state["signals"][signal_id] = record
             self.state["signal_key_index"][key] = signal_id
@@ -208,6 +235,7 @@ def test_repository_idempotent_persistence_and_outcomes(monkeypatch):
         "signal_key_index": {},
         "outcomes": [],
         "next_signal_id": 1,
+        "signal_id_profile": {"data_type": "bigint", "udt_name": "int8", "column_default": "nextval"},
     }
 
     def _fake_postgres_connection(_database_url: str):
@@ -270,6 +298,7 @@ def test_repository_persists_categorical_confidence_as_text(monkeypatch):
         "signal_key_index": {},
         "outcomes": [],
         "next_signal_id": 1,
+        "signal_id_profile": {"data_type": "bigint", "udt_name": "int8", "column_default": "nextval"},
     }
 
     def _fake_postgres_connection(_database_url: str):
@@ -305,3 +334,45 @@ def test_repository_persists_categorical_confidence_as_text(monkeypatch):
     stored = next(iter(state["signals"].values()))
     assert stored["confidence"] == "HIGH"
     assert isinstance(stored["confidence"], str)
+
+
+def test_repository_supplies_uuid_signal_id_when_legacy_schema_has_no_default(monkeypatch):
+    state = {
+        "analysis_runs": {},
+        "signals": {},
+        "signal_key_index": {},
+        "outcomes": [],
+        "next_signal_id": 1,
+        "signal_id_profile": {"data_type": "uuid", "udt_name": "uuid", "column_default": None},
+    }
+
+    def _fake_postgres_connection(_database_url: str):
+        class _Ctx:
+            def __enter__(self_nonlocal):
+                return _FakeConn(state)
+
+            def __exit__(self_nonlocal, exc_type, exc, tb):
+                return False
+
+        return _Ctx()
+
+    monkeypatch.setattr("src.daily_stock_analyse.database.postgres.postgres_connection", _fake_postgres_connection)
+    monkeypatch.setattr("src.daily_stock_analyse.database.postgres.ensure_schema", lambda conn: None)
+
+    repo = PostgresSignalRepository("postgresql://example")
+    now = datetime.now(UTC)
+    regime = MarketRegime("RISK_ON", "BULLISH", "x", "y", "z", {})
+
+    persisted = repo.save_signals(
+        [_analysis("AAA", "LONG")],
+        regime,
+        now,
+        expiry_hours=24,
+        market_session="US_REGULAR",
+        data_source="Live / Intraday Regular Session",
+        ai_provider="openai",
+    )
+
+    assert persisted == 1
+    stored = next(iter(state["signals"].values()))
+    assert isinstance(stored["signal_id"], UUID)
