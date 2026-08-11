@@ -3,7 +3,7 @@ name: Daily Stock Analysis
 on:
   workflow_dispatch:
   schedule:
-    - cron: "20 1 * * 1-5"
+    - cron: "0 0 * * 1-5"
 
 env:
   SEND_EMAIL: "1"
