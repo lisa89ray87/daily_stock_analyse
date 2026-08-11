@@ -415,6 +415,7 @@ def test_neon_smoke_cleanup_skips_when_legacy_signals_lack_run_id(monkeypatch):
 def test_neon_smoke_main_preserves_original_failure_when_cleanup_also_fails(monkeypatch, capsys):
     secret = "postgresql://user:super-secret@host/db"
     monkeypatch.setenv("DATABASE_URL", secret)
+    monkeypatch.setattr("src.daily_stock_analyse.database.neon_smoke._verify_tls_connection", lambda conn: None)
     monkeypatch.setattr("src.daily_stock_analyse.database.neon_smoke.ensure_schema", lambda conn: (_ for _ in ()).throw(RuntimeError("schema broke")))
     monkeypatch.setattr("src.daily_stock_analyse.database.neon_smoke._cleanup", lambda database_url, run_id: (_ for _ in ()).throw(RuntimeError("cleanup broke")))
 
@@ -435,3 +436,53 @@ def test_neon_smoke_main_preserves_original_failure_when_cleanup_also_fails(monk
     captured = capsys.readouterr()
     assert "super-secret" not in captured.out
     assert "super-secret" not in captured.err
+
+
+def test_neon_smoke_tls_verification_accepts_runtime_ssl_state():
+    class _Info:
+        def get_parameters(self):
+            return {"sslmode": "require", "channel_binding": "require"}
+
+    class _PgConn:
+        ssl_in_use = True
+
+    class _Conn:
+        info = _Info()
+        pgconn = _PgConn()
+
+    neon_smoke._verify_tls_connection(_Conn())
+
+
+def test_neon_smoke_tls_verification_rejects_missing_runtime_ssl_even_if_params_require_it():
+    class _Info:
+        def get_parameters(self):
+            return {"sslmode": "require", "channel_binding": "require"}
+
+    class _PgConn:
+        ssl_in_use = False
+
+    class _Conn:
+        info = _Info()
+        pgconn = _PgConn()
+
+    with pytest.raises(RuntimeError, match="ssl check failed"):
+        neon_smoke._verify_tls_connection(_Conn())
+
+
+def test_neon_smoke_tls_verification_falls_back_to_ssl_attributes_when_ssl_in_use_is_unavailable():
+    class _Info:
+        def get_parameters(self):
+            return {"sslmode": "require", "channel_binding": "require"}
+
+    class _PgConn:
+        ssl_in_use = None
+
+        @staticmethod
+        def ssl_attribute(name: str):
+            return {"protocol": "TLSv1.3", "cipher": "TLS_AES_256_GCM_SHA384"}.get(name)
+
+    class _Conn:
+        info = _Info()
+        pgconn = _PgConn()
+
+    neon_smoke._verify_tls_connection(_Conn())

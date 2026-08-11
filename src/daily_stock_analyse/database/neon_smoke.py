@@ -21,6 +21,42 @@ EXPECTED_INDEXES = {
 }
 
 
+def _verify_tls_connection(conn) -> None:
+    info = getattr(conn, "info", None)
+    parameters = {}
+    if info is not None and hasattr(info, "get_parameters"):
+        try:
+            parameters = {str(key).lower(): str(value).lower() for key, value in (info.get_parameters() or {}).items()}
+        except Exception:
+            parameters = {}
+
+    sslmode = parameters.get("sslmode")
+    channel_binding = parameters.get("channel_binding")
+    if sslmode != "require" or channel_binding != "require":
+        raise RuntimeError("ssl check failed")
+
+    pgconn = getattr(conn, "pgconn", None)
+    if pgconn is None:
+        raise RuntimeError("ssl check failed")
+
+    ssl_in_use = getattr(pgconn, "ssl_in_use", None)
+    if callable(ssl_in_use):
+        ssl_in_use = ssl_in_use()
+    if ssl_in_use is True:
+        return
+    if ssl_in_use is False:
+        raise RuntimeError("ssl check failed")
+
+    ssl_attribute = getattr(pgconn, "ssl_attribute", None)
+    if callable(ssl_attribute):
+        protocol = ssl_attribute("protocol")
+        cipher = ssl_attribute("cipher")
+        if protocol or cipher:
+            return
+
+    raise RuntimeError("ssl check failed")
+
+
 def _smoke_analysis() -> StockAnalysis:
     return StockAnalysis(
         symbol="NEONSMOKE",
@@ -118,19 +154,14 @@ def main() -> int:
     smoke_error: Exception | None = None
     try:
         with postgres_connection(database_url) as conn:
+            print("connection PASS")
+            _verify_tls_connection(conn)
+            print("ssl PASS")
+
             ensure_schema(conn)
             print("schema PASS")
 
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COALESCE((SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()), FALSE) AS ssl_enabled"
-                )
-                ssl_row = cur.fetchone() or {}
-                if not ssl_row.get("ssl_enabled"):
-                    raise RuntimeError("ssl check failed")
-                print("connection PASS")
-                print("ssl PASS")
-
                 cur.execute(
                     "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY(%s)",
                     (sorted(EXPECTED_TABLES),),
