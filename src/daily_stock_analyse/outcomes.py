@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 
 from .signal_history import OutcomeUpdate
 
 
 def evaluate_signal_outcomes(
-    open_rows: list[sqlite3.Row],
+    open_rows: list[dict],
     latest_prices: dict[str, float | None],
     as_of_utc: datetime,
 ) -> list[OutcomeUpdate]:

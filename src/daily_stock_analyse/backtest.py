@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 from collections import defaultdict
 
 
-def summarize_backtest(rows: list[sqlite3.Row]) -> dict:
+def summarize_backtest(rows: list[dict]) -> dict:
     total = len(rows)
     if total == 0:
         return {
@@ -57,7 +56,7 @@ def summarize_backtest(rows: list[sqlite3.Row]) -> dict:
     }
 
 
-def _bucket(rows: list[sqlite3.Row]) -> dict:
+def _bucket(rows: list[dict]) -> dict:
     trades = len(rows)
     wins = sum(1 for row in rows if str(row["status"]) in {"TARGET_1", "TARGET_2"})
     losses = sum(1 for row in rows if str(row["status"]) in {"STOP", "INVALIDATED"})

@@ -12,7 +12,7 @@ from .market import build_market_regime
 from .market_hours import MarketSessionStatus, get_market_session_status, is_weekday_in_timezone, utc_now
 from .models import StockAnalysis
 from .providers import YFinanceNewsProvider, create_market_data_provider
-from .runner import _analyze_symbol
+from .analysis_service import analyze_symbol as _analyze_symbol
 from .telegram_provider import TelegramBotProvider
 
 

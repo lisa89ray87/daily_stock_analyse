@@ -83,6 +83,8 @@ class AppConfig:
     telegram_enabled: bool
     telegram_bot_token: str | None
     telegram_chat_id: str | None
+    database_enabled: bool = True
+    database_url: str | None = None
     enable_news: bool = True
     news_lookback_hours: int = 24
     enable_outcome_tracking: bool = True
@@ -289,6 +291,8 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         telegram_enabled=_env_flag("TELEGRAM_ENABLED", False),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        database_enabled=_env_flag("DATABASE_ENABLED", True),
+        database_url=os.getenv("DATABASE_URL"),
         enable_news=_env_flag("ENABLE_NEWS", True),
         news_lookback_hours=_env_int("NEWS_LOOKBACK_HOURS", 24),
         enable_outcome_tracking=_env_flag("ENABLE_OUTCOME_TRACKING", True),
