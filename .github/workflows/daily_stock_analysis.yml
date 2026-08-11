@@ -12,6 +12,10 @@ on:
     - cron: "0 20 * * 1-5"  # 16:00 ET during EDT
     - cron: "0 21 * * 1-5"  # 16:00 ET during EST
 
+concurrency:
+  group: daily-stock-analysis-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   SEND_EMAIL: "1"
 
@@ -110,6 +114,7 @@ jobs:
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
           NEWS_PROVIDER: "yfinance,searxng"
+          NEWS_DIAGNOSTICS: "1"
           NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
           DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}
           ENABLE_OUTCOME_TRACKING: ${{ vars.ENABLE_OUTCOME_TRACKING }}
