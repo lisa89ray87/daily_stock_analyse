@@ -6,7 +6,7 @@ from ..models import CatalystEvent, IntelligenceBlock
 from ..providers.base import NewsProvider
 from ..providers.yfinance_provider import YFinanceNewsProvider
 from .diagnostics import wrap
-from .rss_provider import BingNewsRSSProvider, GoogleNewsRSSProvider
+from .rss_provider import BingNewsRSSProvider, GoogleNewsRSSProvider, _is_actionable_catalyst
 
 
 class AggregatedNewsProvider(NewsProvider):
@@ -46,7 +46,8 @@ class AggregatedNewsProvider(NewsProvider):
                 fresh.append(event)
 
         events = fresh[: max(1, limit)]
-        material = [event for event in events if event.category != "NONE"]
+        actionable = [event for event in events if _is_actionable_catalyst(event)]
+        material = [event for event in actionable]
         out = IntelligenceBlock(
             facts=[f"{event.source}: {event.headline}" for event in events],
             interpretation=["News aggregated from configured providers"],
@@ -56,7 +57,11 @@ class AggregatedNewsProvider(NewsProvider):
             ],
             news_available=bool(events),
             structured_catalysts=events,
-            catalyst_status="CATALYST_IDENTIFIED" if material else ("NO_MATERIAL_CATALYST" if events else "NO_RECENT_NEWS"),
+            catalyst_status=(
+                "CATALYST_IDENTIFIED"
+                if material
+                else ("NO_ACTIONABLE_CATALYST" if events else "NO_RECENT_NEWS")
+            ),
         )
         if not out.upcoming_catalysts:
             out.upcoming_catalysts = [out.catalyst_status]
@@ -66,6 +71,7 @@ class AggregatedNewsProvider(NewsProvider):
             "deduped_count": len(deduped),
             "freshness_input_count": freshness_input,
             "freshness_filtered_count": len(fresh),
+            "actionable_count": len(actionable),
             "max_age_hours": self.max_age_hours,
             "provider_statuses": ",".join(provider_statuses),
         }
