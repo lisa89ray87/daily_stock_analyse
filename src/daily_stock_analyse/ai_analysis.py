@@ -15,6 +15,7 @@ def generate_ai_overlay(
     try:
         payload = build_ai_overlay_payload(analyses, market_regime)
     except Exception:
+        print("AI overlay payload build failed | category=internal_overlay_error")
         return {
             "enabled": False,
             "provider": None,
@@ -31,13 +32,26 @@ def generate_ai_overlay(
 
     for index, provider_name in enumerate(attempt_order):
         try:
+            print(
+                f"AI overlay attempt {index + 1}/{len(attempt_order)} | "
+                f"provider={provider_name} | key_configured={_provider_has_key(provider_name, cfg)}"
+            )
             provider = create_ai_provider(provider_name, cfg)
             result = provider.generate_overlay(payload)
+            print(
+                f"AI overlay success | provider={provider_name} | "
+                f"fallback_used={'yes' if index > 0 else 'no'}"
+            )
             return _success_overlay(result, payload, fallback_used=index > 0)
         except AIProviderError as exc:
+            print(
+                f"AI overlay failure | provider={exc.provider} | category={exc.category} | "
+                f"status_code={exc.status_code if exc.status_code is not None else 'n/a'} | message={exc.public_message}"
+            )
             failures.append(exc)
             continue
         except Exception:
+            print(f"AI overlay failure | provider={provider_name} | category=internal_overlay_error")
             return _disabled_overlay("AI unavailable: internal overlay error")
 
     if not failures:
@@ -171,6 +185,15 @@ def _provider_display(provider_name: str | None) -> str | None:
     if provider_name == "gemini":
         return "Gemini"
     return provider_name
+
+
+def _provider_has_key(provider_name: str, cfg: AppConfig) -> bool:
+    normalized = (provider_name or "").strip().lower()
+    if normalized == "openai":
+        return bool(cfg.openai_api_key)
+    if normalized == "gemini":
+        return bool(cfg.gemini_api_key)
+    return False
 
 
 def _normalize_market_bias(value, payload: dict[str, Any]) -> str:

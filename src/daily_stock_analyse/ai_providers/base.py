@@ -46,11 +46,21 @@ class AIProviderResponse:
 
 
 class AIProviderError(Exception):
-    def __init__(self, provider: str, public_message: str, *, fallback_eligible: bool = True):
+    def __init__(
+        self,
+        provider: str,
+        public_message: str,
+        *,
+        fallback_eligible: bool = True,
+        category: str = "provider_error",
+        status_code: int | None = None,
+    ):
         super().__init__(public_message)
         self.provider = provider
         self.public_message = public_message
         self.fallback_eligible = fallback_eligible
+        self.category = category
+        self.status_code = status_code
 
 
 class AIOverlayProvider(ABC):

@@ -14,12 +14,20 @@ class OpenAIOverlayProvider(AIOverlayProvider):
 
     def generate_overlay(self, payload: dict) -> AIProviderResponse:
         if not self.api_key:
-            raise AIProviderError(self.provider_name, "OpenAI unavailable: OPENAI_API_KEY not configured")
+            raise AIProviderError(
+                self.provider_name,
+                "OpenAI unavailable: OPENAI_API_KEY not configured",
+                category="configuration",
+            )
 
         try:
             from openai import OpenAI
         except Exception:
-            raise AIProviderError(self.provider_name, "OpenAI unavailable: client not installed")
+            raise AIProviderError(
+                self.provider_name,
+                "OpenAI unavailable: client not installed",
+                category="client_import",
+            )
 
         try:
             client = OpenAI(api_key=self.api_key)
@@ -36,7 +44,7 @@ class OpenAIOverlayProvider(AIOverlayProvider):
 
         text = getattr(response, "output_text", "") or ""
         if not text.strip():
-            raise AIProviderError(self.provider_name, "OpenAI returned no content")
+            raise AIProviderError(self.provider_name, "OpenAI returned no content", category="empty_response")
         return normalize_overlay_text(self.provider_name, text)
 
 
@@ -46,11 +54,31 @@ def _classify_openai_error(exc: Exception) -> AIProviderError:
     status_code = getattr(exc, "status_code", None)
 
     if status_code == 429 or "429" in text or "insufficient_quota" in text or "credit_balance_exhausted" in text:
-        return AIProviderError("openai", "OpenAI quota or rate limit exceeded")
+        return AIProviderError(
+            "openai",
+            "OpenAI quota or rate limit exceeded",
+            category="quota_or_rate_limit",
+            status_code=status_code,
+        )
     if "ratelimit" in class_name or "rate limit" in text:
-        return AIProviderError("openai", "OpenAI quota or rate limit exceeded")
+        return AIProviderError(
+            "openai",
+            "OpenAI quota or rate limit exceeded",
+            category="quota_or_rate_limit",
+            status_code=status_code,
+        )
     if status_code in {401, 403} or "authentication" in text or "unauthorized" in text or "api key" in text:
-        return AIProviderError("openai", "OpenAI authentication or configuration failed")
+        return AIProviderError(
+            "openai",
+            "OpenAI authentication or configuration failed",
+            category="authentication",
+            status_code=status_code,
+        )
     if status_code is not None or class_name.endswith("error"):
-        return AIProviderError("openai", "OpenAI API request failed")
+        return AIProviderError(
+            "openai",
+            "OpenAI API request failed",
+            category="api_error",
+            status_code=status_code,
+        )
     raise exc
