@@ -234,6 +234,76 @@
       </div>
 
       <div class="section">
+        <h2>FIXED SIX ANALYSIS</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Name</th>
+                <th>Signal</th>
+                <th>Direction Bias</th>
+                <th>Setup Score</th>
+                <th>Candidate Score</th>
+                <th>Trading Horizon</th>
+                <th>Candidate Status</th>
+                <th>Market Alignment</th>
+                <th>Confidence</th>
+                <th>Trend</th>
+                <th>RSI</th>
+                <th>MACD</th>
+                <th>VWAP</th>
+                <th>Relative Volume</th>
+                <th>Gap %</th>
+                <th>Entry Trigger</th>
+                <th>Entry Trigger Price</th>
+                <th>Confirmation Level</th>
+                <th>Target 1</th>
+                <th>Target 2</th>
+                <th>Invalidation</th>
+                <th>Invalidation Price</th>
+                <th>Main Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for sym in report.fixed_symbols %}
+                {% for a in report.analyses %}
+                  {% if a.symbol == sym %}
+                  <tr>
+                    <td>{{ a.symbol }}</td>
+                    <td>{{ a.name or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.signal or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.direction_bias or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.setup_score if a.setup_score is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ a.candidate_score if a.candidate_score is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ a.trading_horizon or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.candidate_status or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.market_alignment or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.confidence or 'UNAVAILABLE' }}</td>
+                    <td>{{ a.market_data.trend or 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.market_data.rsi14) if a.market_data.rsi14 is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.market_data.macd) if a.market_data.macd is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.market_data.vwap) if a.market_data.vwap is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.market_data.relative_volume) if a.market_data.relative_volume is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.market_data.gap_pct) if a.market_data.gap_pct is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ a.battle_plan.entry_area or 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.battle_plan.entry_trigger_price) if a.battle_plan.entry_trigger_price is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.battle_plan.confirmation_level) if a.battle_plan.confirmation_level is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.battle_plan.target_1) if a.battle_plan.target_1 is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.battle_plan.target_2) if a.battle_plan.target_2 is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ a.battle_plan.invalidation or 'UNAVAILABLE' }}</td>
+                    <td>{{ '%.2f'|format(a.battle_plan.invalidation_price) if a.battle_plan.invalidation_price is not none else 'UNAVAILABLE' }}</td>
+                    <td>{{ a.main_reason or 'UNAVAILABLE' }}</td>
+                  </tr>
+                  {% endif %}
+                {% endfor %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section">
         <h2>Data Quality</h2>
         <div class="grid">
           {% for s in report.analyses %}
