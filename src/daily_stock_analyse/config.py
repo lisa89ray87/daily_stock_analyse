@@ -14,37 +14,10 @@ MAX_ANALYSIS_SYMBOLS_ENV_VAR = "MAX_ANALYSIS_SYMBOLS"
 DEFAULT_MAX_ANALYSIS_SYMBOLS = 20
 _SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]*$")
 DEFAULT_CANDIDATE_UNIVERSE = [
-    "AAPL",
-    "MSFT",
-    "GOOGL",
-    "AMZN",
-    "META",
-    "TSLA",
-    "AVGO",
-    "QCOM",
-    "MU",
-    "ASML",
-    "ARM",
-    "SMCI",
-    "PLTR",
-    "SNOW",
-    "CRM",
-    "ADBE",
-    "CSCO",
-    "NFLX",
-    "INTU",
-    "ORCL",
-    "ANET",
-    "TSM",
-    "AMAT",
-    "LRCX",
-    "KLAC",
-    "DELL",
-    "UBER",
-    "PANW",
-    "CRWD",
-    "DDOG",
-    "MDB",
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "QCOM", "MU",
+    "ASML", "ARM", "SMCI", "PLTR", "SNOW", "CRM", "ADBE", "CSCO", "NFLX",
+    "INTU", "ORCL", "ANET", "TSM", "AMAT", "LRCX", "KLAC", "DELL", "UBER",
+    "PANW", "CRWD", "DDOG", "MDB",
 ]
 
 
@@ -88,9 +61,6 @@ class AppConfig:
     enable_news: bool = True
     news_lookback_hours: int = 24
     news_max_age_hours: int = 24
-    searxng_base_urls: list[str] = None
-    searxng_public_instances_enabled: bool = True
-    searxng_timeout_seconds: int = 8
     enable_outcome_tracking: bool = True
     enable_backtest: bool = True
     signal_db_path: str = "artifacts/signal_history.db"
@@ -148,22 +118,9 @@ def _env_nonempty_str(name: str, default: str) -> str:
 
 
 def _normalize_fraction_threshold(value: float) -> float:
-    # Accept both decimal form (0.7) and percentage-like form (70).
     if value > 1.0:
         return value / 100.0
     return value
-
-
-def _env_csv_urls(name: str, default: list[str] | None = None) -> list[str]:
-    raw = os.getenv(name)
-    if raw is None:
-        return list(default or [])
-    out: list[str] = []
-    for part in raw.split(","):
-        value = part.strip().rstrip("/")
-        if value:
-            out.append(value)
-    return out
 
 
 def _parse_positive_int(raw: str | None, *, env_name: str, default: int) -> int:
@@ -182,11 +139,9 @@ def _parse_positive_int(raw: str | None, *, env_name: str, default: int) -> int:
 
 
 def _normalize_symbol_list(raw: str, *, env_name: str, max_symbols: int) -> list[str]:
-    symbols = [part.strip().upper() for part in raw.split(",")]
-    symbols = [symbol for symbol in symbols if symbol]
+    symbols = [part.strip().upper() for part in raw.split(",") if part.strip()]
     if not symbols:
         raise ValueError(f"{env_name} must contain at least 1 symbol")
-
     deduped: list[str] = []
     seen: set[str] = set()
     for symbol in symbols:
@@ -194,12 +149,9 @@ def _normalize_symbol_list(raw: str, *, env_name: str, max_symbols: int) -> list
             continue
         seen.add(symbol)
         deduped.append(symbol)
-
     invalid = [symbol for symbol in deduped if not _SYMBOL_RE.match(symbol)]
     if invalid:
-        raise ValueError(
-            f"{env_name} contains invalid symbol(s): {', '.join(invalid)}"
-        )
+        raise ValueError(f"{env_name} contains invalid symbol(s): {', '.join(invalid)}")
     if len(deduped) > max_symbols:
         raise ValueError(
             f"{env_name} supplied {len(deduped)} unique symbols; MAX_ANALYSIS_SYMBOLS is {max_symbols}"
@@ -209,58 +161,37 @@ def _normalize_symbol_list(raw: str, *, env_name: str, max_symbols: int) -> list
 
 def _parse_analysis_symbols(analysis_raw: str | None, fixed_six_raw: str | None, *, max_symbols: int) -> list[str]:
     if analysis_raw is not None:
-        return _normalize_symbol_list(
-            analysis_raw,
-            env_name=ANALYSIS_SYMBOLS_ENV_VAR,
-            max_symbols=max_symbols,
-        )
+        return _normalize_symbol_list(analysis_raw, env_name=ANALYSIS_SYMBOLS_ENV_VAR, max_symbols=max_symbols)
     if fixed_six_raw is not None:
-        return _normalize_symbol_list(
-            fixed_six_raw,
-            env_name=FIXED_SIX_ENV_VAR,
-            max_symbols=max_symbols,
-        )
+        return _normalize_symbol_list(fixed_six_raw, env_name=FIXED_SIX_ENV_VAR, max_symbols=max_symbols)
     return list(DEFAULT_FIXED_WATCHLIST)
 
 
 def _load_watchlist_config(base_path: Path) -> tuple[list[str], list[str], dict[str, float]]:
     cfg_path = base_path / "config" / "watchlist.json"
+    defaults = {
+        "trend": 0.20,
+        "momentum": 0.15,
+        "volume": 0.10,
+        "relative_strength": 0.10,
+        "fundamentals_news": 0.20,
+        "catalyst_event": 0.10,
+        "risk_reward": 0.15,
+    }
     if not cfg_path.exists():
-        return DEFAULT_FIXED_WATCHLIST, DEFAULT_CANDIDATE_UNIVERSE, {
-            "trend": 0.20,
-            "momentum": 0.15,
-            "volume": 0.10,
-            "relative_strength": 0.10,
-            "fundamentals_news": 0.20,
-            "catalyst_event": 0.10,
-            "risk_reward": 0.15,
-        }
-
+        return DEFAULT_FIXED_WATCHLIST, DEFAULT_CANDIDATE_UNIVERSE, defaults
     with cfg_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
-
     return (
         payload.get("fixed_watchlist", DEFAULT_FIXED_WATCHLIST),
         payload.get("candidate_universe", DEFAULT_CANDIDATE_UNIVERSE),
-        payload.get(
-            "score_weights",
-            {
-                "trend": 0.20,
-                "momentum": 0.15,
-                "volume": 0.10,
-                "relative_strength": 0.10,
-                "fundamentals_news": 0.20,
-                "catalyst_event": 0.10,
-                "risk_reward": 0.15,
-            },
-        ),
+        payload.get("score_weights", defaults),
     )
 
 
 def load_config(base_path: Path | None = None) -> AppConfig:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     _, universe, weights = _load_watchlist_config(repo_root)
-    email_to = os.getenv("EMAIL_TO", "raymond87tan@gmail.com")
     max_analysis_symbols = _parse_positive_int(
         os.getenv(MAX_ANALYSIS_SYMBOLS_ENV_VAR),
         env_name=MAX_ANALYSIS_SYMBOLS_ENV_VAR,
@@ -271,7 +202,6 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         os.getenv(FIXED_SIX_ENV_VAR),
         max_symbols=max_analysis_symbols,
     )
-
     news_max_age_hours = _env_int("NEWS_MAX_AGE_HOURS", _env_int("NEWS_LOOKBACK_HOURS", 24))
 
     return AppConfig(
@@ -279,7 +209,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         resend_api_key=os.getenv("RESEND_API_KEY"),
         email_from=os.getenv("EMAIL_FROM"),
-        email_to=email_to,
+        email_to=os.getenv("EMAIL_TO", "raymond87tan@gmail.com"),
         send_email=_env_flag("SEND_EMAIL", True),
         data_provider=os.getenv("DATA_PROVIDER", "yfinance"),
         news_provider=os.getenv("NEWS_PROVIDER", "yfinance"),
@@ -314,9 +244,6 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         enable_news=_env_flag("ENABLE_NEWS", True),
         news_lookback_hours=news_max_age_hours,
         news_max_age_hours=news_max_age_hours,
-        searxng_base_urls=_env_csv_urls("SEARXNG_BASE_URLS", []),
-        searxng_public_instances_enabled=_env_flag("SEARXNG_PUBLIC_INSTANCES_ENABLED", True),
-        searxng_timeout_seconds=_env_int("SEARXNG_TIMEOUT_SECONDS", 8),
         enable_outcome_tracking=_env_flag("ENABLE_OUTCOME_TRACKING", True),
         enable_backtest=_env_flag("ENABLE_BACKTEST", True),
         signal_db_path=_env_nonempty_str("SIGNAL_DB_PATH", "artifacts/signal_history.db"),
