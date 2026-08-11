@@ -9,7 +9,7 @@ from .base import AIOverlayProvider, AIProviderError, AIProviderResponse, OVERLA
 
 class GeminiOverlayProvider(AIOverlayProvider):
     provider_name = "gemini"
-    model_name = "gemini-2.5-flash"
+    model_name = "gemini-3.6-flash"
     api_base = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def __init__(self, api_key: str | None):
