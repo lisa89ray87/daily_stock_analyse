@@ -53,6 +53,13 @@ def ensure_schema(conn: Any) -> None:
             ON CONFLICT (version) DO NOTHING
             """
         )
+        cur.execute(
+            """
+            INSERT INTO schema_migrations(version)
+            VALUES (4)
+            ON CONFLICT (version) DO NOTHING
+            """
+        )
 
     conn.commit()
 
@@ -146,6 +153,7 @@ def _ensure_signals_schema(cur: Any) -> None:
             WHERE direction IS NULL AND signal IS NOT NULL
             """
         )
+    _relax_legacy_not_null_column(cur, "signals", "strategy_id")
 
     if not _constraint_exists(cur, "fk_signals_run_id"):
         cur.execute(
@@ -294,6 +302,15 @@ def _ensure_text_compatible_column(cur: Any, table_name: str, column_name: str, 
         WHERE {column_name} IS NULL AND {legacy_column_name} IS NOT NULL
         """
     )
+
+
+def _relax_legacy_not_null_column(cur: Any, table_name: str, column_name: str) -> None:
+    columns = _column_map(cur, table_name)
+    column = columns.get(column_name)
+    if not column:
+        return
+    if str(column.get("is_nullable") or "YES").upper() == "NO":
+        cur.execute(f"ALTER TABLE {table_name} ALTER COLUMN {column_name} DROP NOT NULL")
 
 
 def _signal_id_sql_type(signal_id_type: str) -> str:

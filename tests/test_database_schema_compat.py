@@ -12,14 +12,21 @@ from src.daily_stock_analyse.outcomes import evaluate_signal_outcomes
 
 
 def _meta(type_name: str) -> dict:
-    normalized = type_name.lower()
+    if isinstance(type_name, dict):
+        normalized = str(type_name.get("type") or "text").lower()
+        is_nullable = str(type_name.get("is_nullable") or "YES")
+        column_default = type_name.get("column_default")
+    else:
+        normalized = type_name.lower()
+        is_nullable = "YES"
+        column_default = None
     if normalized == "uuid":
-        return {"data_type": "uuid", "udt_name": "uuid", "is_nullable": "YES", "column_default": None}
+        return {"data_type": "uuid", "udt_name": "uuid", "is_nullable": is_nullable, "column_default": column_default}
     if normalized in {"bigint", "int8"}:
-        return {"data_type": "bigint", "udt_name": "int8", "is_nullable": "YES", "column_default": None}
+        return {"data_type": "bigint", "udt_name": "int8", "is_nullable": is_nullable, "column_default": column_default}
     if normalized in {"integer", "int4"}:
-        return {"data_type": "integer", "udt_name": "int4", "is_nullable": "YES", "column_default": None}
-    return {"data_type": "text", "udt_name": "text", "is_nullable": "YES", "column_default": None}
+        return {"data_type": "integer", "udt_name": "int4", "is_nullable": is_nullable, "column_default": column_default}
+    return {"data_type": "text", "udt_name": "text", "is_nullable": is_nullable, "column_default": column_default}
 
 
 class _SchemaCursor:
@@ -133,6 +140,12 @@ class _SchemaCursor:
             table["columns"]["legacy_signal_id"] = table["columns"].pop("signal_id")
             for row in table["rows"]:
                 row["legacy_signal_id"] = row.pop("signal_id")
+            return self
+
+        if lower.startswith("alter table signals alter column strategy_id drop not null"):
+            column = self.state["tables"]["signals"]["columns"].get("strategy_id")
+            if isinstance(column, dict):
+                column["is_nullable"] = "YES"
             return self
 
         if lower.startswith("alter table signals rename column confidence to legacy_confidence_numeric"):
@@ -293,7 +306,7 @@ def test_ensure_schema_preserves_uuid_signal_id_and_adds_run_id_idempotently():
     assert signals["rows"][0]["run_id"] is None
     assert "uq_signals_run_symbol_direction" in state["indexes"]
     assert "fk_signals_run_id" in state["constraints"]
-    assert state["migrations"] == {1, 2, 3}
+    assert state["migrations"] == {1, 2, 3, 4}
 
 
 def test_ensure_schema_migrates_signal_outcomes_signal_id_to_match_uuid_signals():
@@ -337,6 +350,19 @@ def test_ensure_schema_preserves_legacy_numeric_confidence_and_exposes_text_conf
     assert signals["columns"]["confidence"] == "text"
     assert signals["rows"][0]["legacy_confidence_numeric"] == 85
     assert signals["rows"][0]["confidence"] == "85"
+
+
+def test_ensure_schema_relaxes_legacy_strategy_id_not_null_requirement():
+    state = _legacy_uuid_state()
+    state["tables"]["signals"]["columns"]["strategy_id"] = {"type": "uuid", "is_nullable": "NO", "column_default": None}
+    state["tables"]["signals"]["rows"][0]["strategy_id"] = str(uuid4())
+    conn = _SchemaConn(state)
+
+    ensure_schema(conn)
+
+    strategy_column = state["tables"]["signals"]["columns"]["strategy_id"]
+    assert isinstance(strategy_column, dict)
+    assert strategy_column["is_nullable"] == "YES"
 
 
 def test_uuid_signal_id_is_preserved_by_outcome_engine():
