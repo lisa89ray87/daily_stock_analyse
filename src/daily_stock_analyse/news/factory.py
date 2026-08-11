@@ -15,8 +15,23 @@ class AggregatedNewsProvider(NewsProvider):
     def __init__(self, providers: list[NewsProvider], *, max_age_hours: int = 24):
         self._providers = providers
         self._max_age_hours = max(1, int(max_age_hours))
+        self._diagnostic: dict[str, int] = {
+            "collected_count": 0,
+            "deduped_count": 0,
+            "freshness_input_count": 0,
+            "freshness_filtered_count": 0,
+        }
+
+    def diagnostic_snapshot(self) -> dict[str, int]:
+        return dict(self._diagnostic)
 
     def get_news(self, symbol: str, limit: int = 5) -> IntelligenceBlock:
+        self._diagnostic = {
+            "collected_count": 0,
+            "deduped_count": 0,
+            "freshness_input_count": 0,
+            "freshness_filtered_count": 0,
+        }
         collected: list[CatalystEvent] = []
         provider_results: list[IntelligenceBlock] = []
 
@@ -27,6 +42,8 @@ class AggregatedNewsProvider(NewsProvider):
                 continue
             provider_results.append(data)
             collected.extend(data.structured_catalysts)
+
+        self._diagnostic["collected_count"] = len(collected)
 
         if not collected:
             if any(x.catalyst_status == "NO_MATERIAL_CATALYST" for x in provider_results):
@@ -48,7 +65,10 @@ class AggregatedNewsProvider(NewsProvider):
             )
 
         deduped = self._deduplicate(collected)
+        self._diagnostic["deduped_count"] = len(deduped)
+        self._diagnostic["freshness_input_count"] = len(deduped)
         filtered = self._apply_freshness(deduped)
+        self._diagnostic["freshness_filtered_count"] = len(filtered)
 
         if not filtered:
             return IntelligenceBlock(
