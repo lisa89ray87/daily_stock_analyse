@@ -69,15 +69,21 @@ def _smoke_analysis() -> StockAnalysis:
 def _cleanup(database_url: str, run_id: str) -> None:
     with postgres_connection(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                DELETE FROM signal_outcomes
-                WHERE signal_id IN (SELECT signal_id FROM signals WHERE run_id = %s)
-                """,
-                (run_id,),
-            )
-            cur.execute("DELETE FROM signals WHERE run_id = %s", (run_id,))
-            cur.execute("DELETE FROM analysis_runs WHERE run_id = %s", (run_id,))
+            cur.execute("SELECT to_regclass('public.signal_outcomes') AS name")
+            if (cur.fetchone() or {}).get("name"):
+                cur.execute(
+                    """
+                    DELETE FROM signal_outcomes
+                    WHERE signal_id IN (SELECT signal_id FROM signals WHERE run_id = %s)
+                    """,
+                    (run_id,),
+                )
+            cur.execute("SELECT to_regclass('public.signals') AS name")
+            if (cur.fetchone() or {}).get("name"):
+                cur.execute("DELETE FROM signals WHERE run_id = %s", (run_id,))
+            cur.execute("SELECT to_regclass('public.analysis_runs') AS name")
+            if (cur.fetchone() or {}).get("name"):
+                cur.execute("DELETE FROM analysis_runs WHERE run_id = %s", (run_id,))
         conn.commit()
 
 

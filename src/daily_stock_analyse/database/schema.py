@@ -27,6 +27,8 @@ def ensure_schema(conn: Any) -> None:
             """
         )
 
+        _migrate_legacy_signals_schema(cur)
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS signals (
@@ -96,3 +98,18 @@ def ensure_schema(conn: Any) -> None:
         )
 
     conn.commit()
+
+
+def _migrate_legacy_signals_schema(cur: Any) -> None:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'signals'
+        """
+    )
+    columns = {row["column_name"] for row in cur.fetchall()}
+    if not columns:
+        return
+    if "signal_id" not in columns and "id" in columns:
+        cur.execute("ALTER TABLE signals RENAME COLUMN id TO signal_id")
