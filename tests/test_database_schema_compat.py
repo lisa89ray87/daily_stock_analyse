@@ -135,6 +135,13 @@ class _SchemaCursor:
                 row["legacy_signal_id"] = row.pop("signal_id")
             return self
 
+        if lower.startswith("alter table signals rename column confidence to legacy_confidence_numeric"):
+            table = self.state["tables"]["signals"]
+            table["columns"]["legacy_confidence_numeric"] = table["columns"].pop("confidence")
+            for row in table["rows"]:
+                row["legacy_confidence_numeric"] = row.pop("confidence")
+            return self
+
         if lower.startswith("alter table") and " add column if not exists " in lower:
             match = re.search(r"alter table ([a-z_]+) add column if not exists ([a-z0-9_]+) ([a-z0-9_ ]+)", lower)
             assert match is not None
@@ -192,6 +199,13 @@ class _SchemaCursor:
             for row in signal_rows:
                 if row.get("direction") is None and row.get("signal") is not None:
                     row["direction"] = row.get("signal")
+            return self
+
+        if lower.startswith("update signals set confidence = coalesce(confidence, legacy_confidence_numeric::text)"):
+            signal_rows = self.state["tables"].get("signals", {}).get("rows", [])
+            for row in signal_rows:
+                if row.get("confidence") is None and row.get("legacy_confidence_numeric") is not None:
+                    row["confidence"] = str(row.get("legacy_confidence_numeric"))
             return self
 
         if lower.startswith("delete from signal_outcomes"):
@@ -279,7 +293,7 @@ def test_ensure_schema_preserves_uuid_signal_id_and_adds_run_id_idempotently():
     assert signals["rows"][0]["run_id"] is None
     assert "uq_signals_run_symbol_direction" in state["indexes"]
     assert "fk_signals_run_id" in state["constraints"]
-    assert state["migrations"] == {1, 2}
+    assert state["migrations"] == {1, 2, 3}
 
 
 def test_ensure_schema_migrates_signal_outcomes_signal_id_to_match_uuid_signals():
@@ -308,6 +322,21 @@ def test_ensure_schema_backfills_direction_from_legacy_signal_column():
     signals = state["tables"]["signals"]
     assert "direction" in signals["columns"]
     assert signals["rows"][0]["direction"] == "LONG"
+
+
+def test_ensure_schema_preserves_legacy_numeric_confidence_and_exposes_text_confidence():
+    state = _legacy_uuid_state()
+    state["tables"]["signals"]["columns"]["confidence"] = "bigint"
+    state["tables"]["signals"]["rows"][0]["confidence"] = 85
+    conn = _SchemaConn(state)
+
+    ensure_schema(conn)
+
+    signals = state["tables"]["signals"]
+    assert signals["columns"]["legacy_confidence_numeric"] == "bigint"
+    assert signals["columns"]["confidence"] == "text"
+    assert signals["rows"][0]["legacy_confidence_numeric"] == 85
+    assert signals["rows"][0]["confidence"] == "85"
 
 
 def test_uuid_signal_id_is_preserved_by_outcome_engine():

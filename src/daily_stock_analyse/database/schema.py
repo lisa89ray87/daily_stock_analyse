@@ -46,6 +46,13 @@ def ensure_schema(conn: Any) -> None:
             ON CONFLICT (version) DO NOTHING
             """
         )
+        cur.execute(
+            """
+            INSERT INTO schema_migrations(version)
+            VALUES (3)
+            ON CONFLICT (version) DO NOTHING
+            """
+        )
 
     conn.commit()
 
@@ -100,11 +107,12 @@ def _ensure_signals_schema(cur: Any) -> None:
         columns.remove("id")
         columns.add("signal_id")
 
+    _ensure_text_compatible_column(cur, "signals", "confidence", legacy_column_name="legacy_confidence_numeric")
+
     for ddl in [
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS run_id TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS direction TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS status TEXT",
-        "ALTER TABLE signals ADD COLUMN IF NOT EXISTS confidence TEXT",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry_price DOUBLE PRECISION",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry_trigger_price DOUBLE PRECISION",
         "ALTER TABLE signals ADD COLUMN IF NOT EXISTS target_1 DOUBLE PRECISION",
@@ -266,6 +274,26 @@ def _normalize_column_type(column: dict[str, Any] | None) -> str | None:
     if udt_name in {"text", "varchar", "bpchar"}:
         return "text"
     return udt_name or data_type or None
+
+
+def _ensure_text_compatible_column(cur: Any, table_name: str, column_name: str, *, legacy_column_name: str) -> None:
+    columns = _column_map(cur, table_name)
+    current_type = _normalize_column_type(columns.get(column_name)) if column_name in columns else None
+    if current_type in {None, "text"}:
+        cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} TEXT")
+        return
+
+    if legacy_column_name not in columns:
+        cur.execute(f"ALTER TABLE {table_name} RENAME COLUMN {column_name} TO {legacy_column_name}")
+
+    cur.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} TEXT")
+    cur.execute(
+        f"""
+        UPDATE {table_name}
+        SET {column_name} = COALESCE({column_name}, {legacy_column_name}::text)
+        WHERE {column_name} IS NULL AND {legacy_column_name} IS NOT NULL
+        """
+    )
 
 
 def _signal_id_sql_type(signal_id_type: str) -> str:

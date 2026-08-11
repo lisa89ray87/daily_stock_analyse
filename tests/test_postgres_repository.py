@@ -58,6 +58,7 @@ class _FakeCursor:
                 "symbol": symbol,
                 "signal": direction,
                 "status": params[3],
+                "confidence": params[4],
                 "entry_trigger_price": params[6],
                 "target_1": params[7],
                 "target_2": params[8],
@@ -260,3 +261,47 @@ def test_repository_idempotent_persistence_and_outcomes(monkeypatch):
     rows = repo.load_backtest_rows(limit=20)
     assert any(row["status"] == "TARGET_1" for row in rows)
     assert len(state["outcomes"]) == 1
+
+
+def test_repository_persists_categorical_confidence_as_text(monkeypatch):
+    state = {
+        "analysis_runs": {},
+        "signals": {},
+        "signal_key_index": {},
+        "outcomes": [],
+        "next_signal_id": 1,
+    }
+
+    def _fake_postgres_connection(_database_url: str):
+        class _Ctx:
+            def __enter__(self_nonlocal):
+                return _FakeConn(state)
+
+            def __exit__(self_nonlocal, exc_type, exc, tb):
+                return False
+
+        return _Ctx()
+
+    monkeypatch.setattr("src.daily_stock_analyse.database.postgres.postgres_connection", _fake_postgres_connection)
+    monkeypatch.setattr("src.daily_stock_analyse.database.postgres.ensure_schema", lambda conn: None)
+
+    repo = PostgresSignalRepository("postgresql://example")
+    now = datetime.now(UTC)
+    regime = MarketRegime("RISK_ON", "BULLISH", "x", "y", "z", {})
+    analysis = _analysis("AAA", "LONG")
+    analysis.confidence = "HIGH"
+
+    persisted = repo.save_signals(
+        [analysis],
+        regime,
+        now,
+        expiry_hours=24,
+        market_session="US_REGULAR",
+        data_source="Live / Intraday Regular Session",
+        ai_provider="openai",
+    )
+
+    assert persisted == 1
+    stored = next(iter(state["signals"].values()))
+    assert stored["confidence"] == "HIGH"
+    assert isinstance(stored["confidence"], str)
