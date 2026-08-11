@@ -11,7 +11,7 @@ from .config import AppConfig, load_config
 from .market import build_market_regime
 from .market_hours import MarketSessionStatus, get_market_session_status, utc_now
 from .models import StockAnalysis
-from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
+from .providers import YFinanceNewsProvider, create_market_data_provider
 from .runner import _analyze_symbol
 from .telegram_provider import TelegramBotProvider
 
@@ -186,7 +186,7 @@ def _run_live_alert_evaluation_cycle(
     phase = _v4_session_phase(now, cfg)
     print(f"V4 phase: {phase}")
 
-    market_provider = YFinanceMarketDataProvider()
+    market_provider = create_market_data_provider(cfg.live_data_provider)
     news_provider = YFinanceNewsProvider()
     regime = build_market_regime()
     sector_strength = regime.indicators.get("semiconductor_etf_change_pct")

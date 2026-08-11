@@ -28,9 +28,12 @@ jobs:
       - name: Run analysis
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          AI_PRIMARY_PROVIDER: ${{ vars.AI_PRIMARY_PROVIDER }}
+          AI_FALLBACK_PROVIDER: ${{ vars.AI_FALLBACK_PROVIDER }}
           DAILY_REPORT_CRON_UTC: ${{ vars.DAILY_REPORT_CRON_UTC }}
           MIN_SETUP_SCORE: ${{ vars.MIN_SETUP_SCORE }}
           MIN_RELATIVE_VOLUME: ${{ vars.MIN_RELATIVE_VOLUME }}

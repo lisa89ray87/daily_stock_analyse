@@ -95,13 +95,13 @@ def run_analysis(base_path: Path | None = None) -> int:
         notes=errors,
     )
 
-    ai_overlay = generate_ai_overlay(selected_analyses, market_regime, cfg.openai_api_key)
+    ai_overlay = generate_ai_overlay(selected_analyses, market_regime, cfg)
 
     output_dir = repo_root / "artifacts"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     md = render_markdown(report, ai_overlay)
-    html = render_html(report, repo_root / "templates")
+    html = render_html(report, repo_root / "templates", ai_overlay)
 
     (output_dir / "daily_stock_analysis.md").write_text(md, encoding="utf-8")
     (output_dir / "daily_stock_analysis.html").write_text(html, encoding="utf-8")

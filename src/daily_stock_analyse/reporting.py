@@ -80,9 +80,46 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append(f"- Dynamic symbols selected: {', '.join(report.dynamic_symbols) if report.dynamic_symbols else 'NONE'}")
 
     if ai_overlay:
-        lines.append("\n## AI Overlay")
-        lines.append(f"- Enabled: {ai_overlay.get('enabled')}")
-        lines.append(f"- Summary: {ai_overlay.get('message')}")
+        lines.append("\n## AI Trading Conclusion")
+        provider_display = ai_overlay.get("provider_display") or "UNAVAILABLE"
+        provider_line = provider_display
+        if ai_overlay.get("fallback_used"):
+            provider_line = f"{provider_display} (fallback)"
+        lines.append(f"- Provider: {provider_line}")
+        lines.append(f"- Status: {ai_overlay.get('status') or ('Enabled' if ai_overlay.get('enabled') else 'Unavailable')}")
+        lines.append(f"- Market Bias: {ai_overlay.get('market_bias') or 'UNAVAILABLE'}")
+        lines.append(f"- Market Regime: {ai_overlay.get('market_regime') or 'UNAVAILABLE'}")
+        lines.append(f"- Final Conclusion: {ai_overlay.get('final_conclusion') or ai_overlay.get('summary') or ai_overlay.get('message')}")
+        best_day_trade = ai_overlay.get("best_day_trade") or {}
+        lines.append("- Best Day-Trade:")
+        lines.append(f"  - Symbol: {best_day_trade.get('symbol', 'NONE')}")
+        lines.append(f"  - Direction: {best_day_trade.get('direction', 'NONE')}")
+        lines.append(f"  - Status: {best_day_trade.get('status', 'UNAVAILABLE')}")
+        lines.append(f"  - Reason: {best_day_trade.get('reason', 'UNAVAILABLE')}")
+        best_long = ai_overlay.get("best_long_candidate") or {}
+        best_short = ai_overlay.get("best_short_candidate") or {}
+        lines.append(f"- Best Long: {best_long.get('symbol', 'NONE')} - {best_long.get('reason', 'UNAVAILABLE')}")
+        lines.append(f"- Best Short: {best_short.get('symbol', 'NONE')} - {best_short.get('reason', 'UNAVAILABLE')}")
+        watchlist = ai_overlay.get("stocks_to_watch") or []
+        if watchlist:
+            lines.append("- Watchlist:")
+            for item in watchlist:
+                lines.append(f"  - {item.get('symbol', 'NONE')}: {item.get('reason', 'UNAVAILABLE')}")
+        avoid = ai_overlay.get("stocks_to_avoid") or []
+        if avoid:
+            lines.append("- Avoid:")
+            for item in avoid:
+                lines.append(f"  - {item.get('symbol', 'NONE')}: {item.get('reason', 'UNAVAILABLE')}")
+        key_risks = ai_overlay.get("key_risks") or []
+        if key_risks:
+            lines.append("- Key Risks:")
+            for risk in key_risks:
+                lines.append(f"  - {risk}")
+        action_points = ai_overlay.get("action_points") or []
+        if action_points:
+            lines.append("- Action Points:")
+            for point in action_points:
+                lines.append(f"  - {point}")
 
     lines.append("\n## Risk Warning")
     lines.append("Automated research report only. No brokerage execution. Not investment advice.")
@@ -90,7 +127,7 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     return "\n".join(lines)
 
 
-def render_html(report: DailyAnalysisReport, template_dir: Path) -> str:
+def render_html(report: DailyAnalysisReport, template_dir: Path, ai_overlay: dict | None = None) -> str:
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         autoescape=select_autoescape(["html", "xml"]),
@@ -115,6 +152,7 @@ def render_html(report: DailyAnalysisReport, template_dir: Path) -> str:
 
     return template.render(
         report=report,
+        ai_overlay=ai_overlay,
         fixed_analyses=fixed_analyses,
         fixed_analyses_prominent=fixed_analyses_prominent,
         dynamic_analyses=dynamic_analyses,

@@ -11,7 +11,7 @@ from src.daily_stock_analyse.models import (
     ScoreBreakdown,
     StockAnalysis,
 )
-from src.daily_stock_analyse.reporting import render_html
+from src.daily_stock_analyse.reporting import render_html, render_markdown
 
 
 def _sample_stock(symbol: str, name: str) -> StockAnalysis:
@@ -96,3 +96,48 @@ def test_html_contains_sk_hynix_labeling():
     html = render_html(report, Path(__file__).resolve().parents[1] / "templates")
     assert "SKHY" in html
     assert "Dynamic Three" not in html
+
+
+def test_reporting_renders_ai_overlay_in_markdown_and_html():
+    report = _sample_report()
+    ai_overlay = {
+        "enabled": True,
+        "provider": "gemini",
+        "provider_display": "Gemini",
+        "status": "Fallback",
+        "fallback_used": True,
+        "summary": "Risk is elevated but selective long setups remain viable.",
+        "action_points": ["Protect entries", "Prioritize liquid names", "Wait for confirmation"],
+        "market_bias": "MIXED",
+        "market_regime": "Mixed tape with selective momentum leadership.",
+        "best_long_candidate": {"symbol": "AMD", "reason": "Best long bias among supplied names."},
+        "best_short_candidate": {"symbol": "NONE", "reason": "No clean short candidate in supplied data."},
+        "best_day_trade": {
+            "symbol": "AMD",
+            "direction": "LONG",
+            "reason": "Candidate with strongest supplied setup.",
+            "status": "Candidate, not confirmed",
+        },
+        "stocks_to_watch": [{"symbol": "AMD", "reason": "Strong relative volume and trend."}],
+        "stocks_to_avoid": [{"symbol": "SKHY", "reason": "Insufficient intraday confirmation."}],
+        "key_risks": ["Mixed market regime", "Confirmation still pending"],
+        "final_conclusion": "The market is mixed and AMD deserves the most attention, but confirmation is still required before treating it as a confirmed trade.",
+        "message": "The market is mixed and AMD deserves the most attention, but confirmation is still required before treating it as a confirmed trade.",
+    }
+    markdown = render_markdown(report, ai_overlay)
+    html = render_html(report, Path(__file__).resolve().parents[1] / "templates", ai_overlay)
+    assert "## AI Trading Conclusion" in markdown
+    assert "Provider: Gemini (fallback)" in markdown
+    assert "Market Bias: MIXED" in markdown
+    assert "Best Day-Trade:" in markdown
+    assert "Protect entries" in markdown
+    assert "AI Trading Conclusion" in html
+    assert "Gemini (fallback)" in html
+    assert "Market Bias" in html
+    assert "Best Long" in html
+    assert "Best Short" in html
+    assert "Watchlist" in html
+    assert "Avoid" in html
+    assert "Key Risks" in html
+    assert "Wait for confirmation" in html
+

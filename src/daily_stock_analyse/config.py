@@ -77,6 +77,10 @@ class AppConfig:
     telegram_enabled: bool
     telegram_bot_token: str | None
     telegram_chat_id: str | None
+    live_data_provider: str = "yfinance"
+    gemini_api_key: str | None = None
+    ai_primary_provider: str = "openai"
+    ai_fallback_provider: str = "gemini"
     v4_opening_start: str = "09:30"
     v4_opening_end: str = "10:00"
     v4_opening_min_rvol: float = 1.20
@@ -173,6 +177,7 @@ def load_config(base_path: Path | None = None) -> AppConfig:
 
     return AppConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY"),
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
         resend_api_key=os.getenv("RESEND_API_KEY"),
         email_from=os.getenv("EMAIL_FROM"),
         email_to=email_to,
@@ -205,6 +210,9 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         telegram_enabled=_env_flag("TELEGRAM_ENABLED", False),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        live_data_provider=_env_nonempty_str("LIVE_DATA_PROVIDER", "yfinance"),
+        ai_primary_provider=_env_nonempty_str("AI_PRIMARY_PROVIDER", "openai"),
+        ai_fallback_provider=_env_nonempty_str("AI_FALLBACK_PROVIDER", "gemini"),
         v4_opening_start=_env_nonempty_str("V4_OPENING_START", "09:30"),
         v4_opening_end=_env_nonempty_str("V4_OPENING_END", "10:00"),
         v4_opening_min_rvol=_env_float("V4_OPENING_MIN_RVOL", 1.20),

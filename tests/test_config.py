@@ -162,3 +162,25 @@ def test_live_market_close_default_is_1600(monkeypatch):
     monkeypatch.delenv("LIVE_MARKET_CLOSE", raising=False)
     cfg = load_config(Path(__file__).resolve().parents[1])
     assert cfg.live_market_close == "16:00"
+
+
+def test_live_data_provider_default_is_yfinance(monkeypatch):
+    monkeypatch.delenv("LIVE_DATA_PROVIDER", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_data_provider == "yfinance"
+
+
+def test_live_data_provider_explicit_yfinance(monkeypatch):
+    monkeypatch.setenv("LIVE_DATA_PROVIDER", "yfinance")
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.live_data_provider == "yfinance"
+
+
+def test_ai_provider_defaults(monkeypatch):
+    monkeypatch.delenv("AI_PRIMARY_PROVIDER", raising=False)
+    monkeypatch.delenv("AI_FALLBACK_PROVIDER", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    cfg = load_config(Path(__file__).resolve().parents[1])
+    assert cfg.ai_primary_provider == "openai"
+    assert cfg.ai_fallback_provider == "gemini"
+    assert cfg.gemini_api_key is None
