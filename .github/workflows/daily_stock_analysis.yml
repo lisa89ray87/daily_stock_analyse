@@ -57,6 +57,12 @@ jobs:
           ALERT_MIN_SETUP_SCORE: ${{ vars.ALERT_MIN_SETUP_SCORE }}
           ALERT_MIN_RVOL: ${{ vars.ALERT_MIN_RVOL }}
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
+          ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
+          NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
+          ENABLE_OUTCOME_TRACKING: ${{ vars.ENABLE_OUTCOME_TRACKING }}
+          ENABLE_BACKTEST: ${{ vars.ENABLE_BACKTEST }}
+          SIGNAL_DB_PATH: ${{ vars.SIGNAL_DB_PATH }}
+          SIGNAL_EXPIRY_HOURS: ${{ vars.SIGNAL_EXPIRY_HOURS }}
         run: python -m src.daily_stock_analyse
 
       - name: Upload report artifacts

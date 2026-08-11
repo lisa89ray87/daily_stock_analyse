@@ -83,6 +83,12 @@ class AppConfig:
     telegram_enabled: bool
     telegram_bot_token: str | None
     telegram_chat_id: str | None
+    enable_news: bool = True
+    news_lookback_hours: int = 24
+    enable_outcome_tracking: bool = True
+    enable_backtest: bool = True
+    signal_db_path: str = "artifacts/signal_history.db"
+    signal_expiry_hours: int = 48
     live_data_provider: str = "yfinance"
     gemini_api_key: str | None = None
     ai_primary_provider: str = "openai"
@@ -283,6 +289,12 @@ def load_config(base_path: Path | None = None) -> AppConfig:
         telegram_enabled=_env_flag("TELEGRAM_ENABLED", False),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        enable_news=_env_flag("ENABLE_NEWS", True),
+        news_lookback_hours=_env_int("NEWS_LOOKBACK_HOURS", 24),
+        enable_outcome_tracking=_env_flag("ENABLE_OUTCOME_TRACKING", True),
+        enable_backtest=_env_flag("ENABLE_BACKTEST", True),
+        signal_db_path=_env_nonempty_str("SIGNAL_DB_PATH", "artifacts/signal_history.db"),
+        signal_expiry_hours=_env_int("SIGNAL_EXPIRY_HOURS", 48),
         live_data_provider=_env_nonempty_str("LIVE_DATA_PROVIDER", "yfinance"),
         ai_primary_provider=_env_nonempty_str("AI_PRIMARY_PROVIDER", "openai"),
         ai_fallback_provider=_env_nonempty_str("AI_FALLBACK_PROVIDER", "gemini"),

@@ -13,6 +13,30 @@ SessionLabel = Literal["REGULAR", "PREMARKET", "AFTER_HOURS", "OVERNIGHT_REFEREN
 
 
 @dataclass
+class CatalystEvent:
+    symbol: str
+    headline: str
+    source: str
+    published_at: str | None
+    category: Literal[
+        "EARNINGS",
+        "GUIDANCE",
+        "ANALYST",
+        "PRODUCT",
+        "REGULATORY",
+        "M&A",
+        "SECTOR",
+        "MACRO",
+        "OTHER",
+        "NONE",
+    ] = "NONE"
+    importance: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"] = "UNKNOWN"
+    catalyst_direction: Literal["BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"] = "UNKNOWN"
+    summary: str = "UNAVAILABLE"
+    confidence: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"] = "UNKNOWN"
+
+
+@dataclass
 class MarketData:
     symbol: str
     price: float | None = None
@@ -66,6 +90,11 @@ class MarketData:
     intraday_rvol: float | None = None
     intraday_rvol_quality: str = "UNAVAILABLE"
     intraday_rvol_note: str | None = None
+    data_session: str = "CLOSED"
+    data_source: str = "UNAVAILABLE"
+    quote_timestamp: str | None = None
+    is_extended_hours: bool = False
+    data_quality: str = "UNKNOWN"
 
 
 @dataclass
@@ -74,6 +103,8 @@ class IntelligenceBlock:
     interpretation: list[str] = field(default_factory=list)
     upcoming_catalysts: list[str] = field(default_factory=list)
     news_available: bool = True
+    structured_catalysts: list[CatalystEvent] = field(default_factory=list)
+    catalyst_status: str = "UNAVAILABLE"
 
 
 @dataclass
@@ -173,3 +204,5 @@ class DailyAnalysisReport:
     market_data_session: str = "CLOSED"
     latest_data_source: str = "UNAVAILABLE"
     live_regular_session: bool = False
+    news_catalysts: list[CatalystEvent] = field(default_factory=list)
+    historical_performance: dict[str, Any] = field(default_factory=dict)

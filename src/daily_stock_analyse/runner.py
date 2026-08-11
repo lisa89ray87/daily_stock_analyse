@@ -7,15 +7,18 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .ai_analysis import generate_ai_overlay
+from .backtest import summarize_backtest
 from .config import AppConfig, load_config
 from .email_provider import EmailPayload, ResendEmailProvider
 from .market import build_market_regime
 from .market_hours import apply_session_aware_market_data, get_market_session_status, next_us_market_open_malaysia, utc_now
-from .models import BattlePlan, DailyAnalysisReport, DataQuality, IntelligenceBlock, StockAnalysis
-from .providers import YFinanceMarketDataProvider, YFinanceNewsProvider
+from .models import BattlePlan, CatalystEvent, DailyAnalysisReport, DataQuality, IntelligenceBlock, StockAnalysis
+from .outcomes import evaluate_signal_outcomes
+from .providers import create_market_data_provider, create_news_provider
 from .reporting import render_html, render_markdown
 from .scoring import decide_signal, score_stock
 from .selector import select_dynamic_opportunities
+from .signal_history import SignalHistoryStore, resolve_signal_db_path
 
 
 def run_analysis(base_path: Path | None = None) -> int:
@@ -29,8 +32,8 @@ def run_analysis(base_path: Path | None = None) -> int:
         market_close_hhmm=cfg.live_market_close,
     )
 
-    market_provider = YFinanceMarketDataProvider()
-    news_provider = YFinanceNewsProvider()
+    market_provider = create_market_data_provider(cfg.data_provider)
+    news_provider = create_news_provider(cfg.news_provider)
 
     market_regime = build_market_regime()
     sector_strength = market_regime.indicators.get("semiconductor_etf_change_pct")
@@ -81,6 +84,31 @@ def run_analysis(base_path: Path | None = None) -> int:
     best_long, closest_long = _best_for_direction(selected_analyses, "LONG")
     best_short, closest_short = _best_for_direction(selected_analyses, "SHORT")
 
+    lifecycle_notes: list[str] = []
+    historical_performance: dict[str, object] = {}
+    daily_catalysts = _collect_daily_catalysts(selected_analyses)
+
+    if cfg.enable_outcome_tracking or cfg.enable_backtest:
+        try:
+            db_path = resolve_signal_db_path(repo_root, cfg.signal_db_path)
+            store = SignalHistoryStore(db_path)
+            persisted = store.save_signals(selected_analyses, market_regime, generated_at_utc, cfg.signal_expiry_hours)
+            lifecycle_notes.append(f"Signal lifecycle database: {db_path}")
+            lifecycle_notes.append(f"Signals persisted this run: {persisted}")
+
+            if cfg.enable_outcome_tracking:
+                open_rows = store.open_signals()
+                latest_prices = {item.symbol: item.market_data.price for item in selected_analyses}
+                updates = evaluate_signal_outcomes(open_rows, latest_prices, generated_at_utc)
+                updated_rows = store.apply_outcome_updates(updates, generated_at_utc)
+                lifecycle_notes.append(f"Signal outcomes updated: {updated_rows}")
+
+            if cfg.enable_backtest:
+                backtest_rows = store.load_backtest_rows(limit=5000)
+                historical_performance = summarize_backtest(backtest_rows)
+        except Exception as exc:
+            lifecycle_notes.append(f"Signal lifecycle disabled for this run: {exc}")
+
     report = DailyAnalysisReport(
         generated_at_utc=generated_at_utc,
         generated_at_malaysia=generated_at_my.strftime("%Y-%m-%d %H:%M %Z"),
@@ -101,7 +129,9 @@ def run_analysis(base_path: Path | None = None) -> int:
         closest_long_candidate=closest_long,
         closest_short_candidate=closest_short,
         best_overall=best_overall,
-        notes=errors,
+        notes=errors + lifecycle_notes,
+        news_catalysts=daily_catalysts,
+        historical_performance=historical_performance,
     )
 
     ai_overlay = generate_ai_overlay(selected_analyses, market_regime, cfg)
@@ -161,10 +191,26 @@ def _analyze_symbol(
         market_open_hhmm=cfg.live_market_open,
         market_close_hhmm=cfg.live_market_close,
     )
-    intelligence = news_provider.get_news(symbol)
+    md.data_session = md.session_state
+    md.data_source = md.selected_data_source
+    md.quote_timestamp = md.data_timestamp
+    md.is_extended_hours = md.selected_price_session in {"PREMARKET", "AFTER_HOURS"}
 
-    if not intelligence.upcoming_catalysts and intelligence.news_available:
-        intelligence.upcoming_catalysts = ["Monitor next earnings window and sector headlines"]
+    if cfg.enable_news:
+        intelligence = news_provider.get_news(symbol)
+    else:
+        intelligence = IntelligenceBlock(
+            facts=["NEWS_DISABLED_BY_CONFIG"],
+            interpretation=["Proceed with technical-only analysis"],
+            upcoming_catalysts=["NEWS_DISABLED_BY_CONFIG"],
+            news_available=False,
+            catalyst_status="NEWS_DISABLED",
+        )
+
+    intelligence = _apply_news_lookback(intelligence, cfg.news_lookback_hours)
+
+    if not intelligence.upcoming_catalysts:
+        intelligence.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
 
     score = score_stock(md, intelligence, cfg.score_weights)
     decision = decide_signal(score, md, cfg, regime_label, sector_strength)
@@ -192,6 +238,7 @@ def _analyze_symbol(
         provider=md.provider,
         warnings=warnings,
     )
+    md.data_quality = "OK" if not warnings else "WARNINGS"
 
     return StockAnalysis(
         symbol=symbol,
@@ -234,6 +281,43 @@ def _report_data_source(analyses: list[StockAnalysis], session_state: str) -> st
     if any(x.market_data.extended_hours_used for x in analyses):
         return "24-Hour / Extended Hours"
     return "UNAVAILABLE"
+
+
+def _apply_news_lookback(intelligence: IntelligenceBlock, lookback_hours: int) -> IntelligenceBlock:
+    if lookback_hours <= 0 or not intelligence.structured_catalysts:
+        return intelligence
+    cutoff = datetime.now(UTC).timestamp() - (lookback_hours * 3600)
+    filtered: list[CatalystEvent] = []
+    for item in intelligence.structured_catalysts:
+        if not item.published_at:
+            filtered.append(item)
+            continue
+        try:
+            ts = datetime.fromisoformat(item.published_at).timestamp()
+        except ValueError:
+            filtered.append(item)
+            continue
+        if ts >= cutoff:
+            filtered.append(item)
+    intelligence.structured_catalysts = filtered
+    material = [x for x in filtered if x.category != "NONE"]
+    if material:
+        intelligence.catalyst_status = "CATALYST_IDENTIFIED"
+        intelligence.upcoming_catalysts = [f"{x.category} | {x.catalyst_direction} | {x.headline}" for x in material[:3]]
+    elif intelligence.news_available:
+        intelligence.catalyst_status = "NO_MATERIAL_CATALYST"
+        intelligence.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
+    return intelligence
+
+
+def _collect_daily_catalysts(analyses: list[StockAnalysis]) -> list[CatalystEvent]:
+    items: list[CatalystEvent] = []
+    for analysis in analyses:
+        for event in analysis.intelligence.structured_catalysts:
+            if event.category == "NONE":
+                continue
+            items.append(event)
+    return items[:25]
 
 
 def _display_name(symbol: str) -> str:
@@ -353,7 +437,7 @@ def _build_battle_plan(md, signal: str) -> BattlePlan:
 
 
 def _unavailable_analysis(symbol: str, reason: str) -> StockAnalysis:
-    md = YFinanceMarketDataProvider().get_market_data(symbol)
+    md = create_market_data_provider("yfinance").get_market_data(symbol)
     intel = IntelligenceBlock(
         facts=["Data unavailable for this symbol"],
         interpretation=[reason],

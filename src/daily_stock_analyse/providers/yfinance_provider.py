@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
 
-from ..models import IntelligenceBlock, MarketData
+from ..models import CatalystEvent, IntelligenceBlock, MarketData
 from .base import MarketDataProvider, NewsProvider
 
 
@@ -175,28 +175,123 @@ class YFinanceNewsProvider(NewsProvider):
     def get_news(self, symbol: str, limit: int = 5) -> IntelligenceBlock:
         ticker = yf.Ticker(symbol)
         out = IntelligenceBlock()
+        out.catalyst_status = "UNAVAILABLE"
 
         try:
             news = ticker.news or []
         except Exception:
             out.news_available = False
-            out.facts.append("News unavailable from provider")
+            out.facts.append("NEWS_UNAVAILABLE")
             out.interpretation.append("Proceed with technical-only analysis")
+            out.catalyst_status = "NEWS_UNAVAILABLE"
             return out
 
         if not news:
             out.news_available = False
-            out.facts.append("No recent provider news returned")
+            out.facts.append("NEWS_UNAVAILABLE")
             out.interpretation.append("Catalyst visibility is low")
+            out.catalyst_status = "NEWS_UNAVAILABLE"
             return out
 
-        for item in news[:limit]:
+        filtered_items = _filter_news_by_lookback(news, hours=24)
+        candidates = filtered_items[:limit]
+
+        for item in candidates:
             title = item.get("title") or "Untitled"
             publisher = item.get("publisher") or "Unknown"
             out.facts.append(f"{publisher}: {title}")
+            event = _classify_catalyst(symbol, item)
+            out.structured_catalysts.append(event)
+
+        material = [x for x in out.structured_catalysts if x.category != "NONE"]
+        if material:
+            out.catalyst_status = "CATALYST_IDENTIFIED"
+            out.upcoming_catalysts = [
+                f"{x.category} | {x.catalyst_direction} | {x.headline}"
+                for x in material[:3]
+            ]
+        else:
+            out.catalyst_status = "NO_MATERIAL_CATALYST"
+            out.upcoming_catalysts = ["NO_MATERIAL_CATALYST"]
 
         out.interpretation.append("News reflects available provider headlines only")
         return out
+
+
+def _filter_news_by_lookback(news_items: list[dict], hours: int) -> list[dict]:
+    if hours <= 0:
+        return news_items
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    out: list[dict] = []
+    for item in news_items:
+        publish_ts = item.get("providerPublishTime")
+        if isinstance(publish_ts, (int, float)):
+            published_at = datetime.fromtimestamp(float(publish_ts), tz=UTC)
+            if published_at < cutoff:
+                continue
+        out.append(item)
+    return out
+
+
+def _classify_catalyst(symbol: str, item: dict) -> CatalystEvent:
+    title = (item.get("title") or "Untitled").strip()
+    publisher = (item.get("publisher") or "Unknown").strip()
+    publish_ts = item.get("providerPublishTime")
+    published_at = None
+    if isinstance(publish_ts, (int, float)):
+        published_at = datetime.fromtimestamp(float(publish_ts), tz=UTC).isoformat()
+
+    lower = title.lower()
+    category = "NONE"
+    direction = "UNKNOWN"
+    importance = "LOW"
+
+    if any(k in lower for k in ["fda", "regulator", "investigation", "lawsuit"]):
+        category = "REGULATORY"
+        importance = "HIGH"
+    elif any(k in lower for k in ["earnings", "eps", "quarter", "q1", "q2", "q3", "q4"]):
+        category = "EARNINGS"
+        importance = "HIGH"
+    elif any(k in lower for k in ["guidance", "outlook", "forecast"]):
+        category = "GUIDANCE"
+        importance = "HIGH"
+    elif any(k in lower for k in ["upgrade", "downgrade", "analyst", "price target"]):
+        category = "ANALYST"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["merger", "acquisition", "buyout", "deal"]):
+        category = "M&A"
+        importance = "HIGH"
+    elif any(k in lower for k in ["launch", "product", "partnership"]):
+        category = "PRODUCT"
+        importance = "MEDIUM"
+    elif any(k in lower for k in ["sector", "industry", "chip", "semiconductor", "macro", "fed", "inflation"]):
+        category = "SECTOR"
+        importance = "MEDIUM"
+    elif title:
+        category = "OTHER"
+
+    bullish_terms = ["beat", "raise", "upgrade", "surge", "growth", "win", "strong"]
+    bearish_terms = ["miss", "cut", "downgrade", "lawsuit", "probe", "fall", "weak"]
+    if any(k in lower for k in bullish_terms) and not any(k in lower for k in bearish_terms):
+        direction = "BULLISH"
+    elif any(k in lower for k in bearish_terms) and not any(k in lower for k in bullish_terms):
+        direction = "BEARISH"
+    elif category == "NONE":
+        direction = "UNKNOWN"
+    else:
+        direction = "NEUTRAL"
+
+    return CatalystEvent(
+        symbol=symbol,
+        headline=title,
+        source=publisher,
+        published_at=published_at,
+        category=category,
+        importance=importance,
+        catalyst_direction=direction,
+        summary=title,
+        confidence="MEDIUM" if category not in {"NONE", "OTHER"} else "LOW",
+    )
 
 
 def _pick_float(*values: float | None) -> float | None:

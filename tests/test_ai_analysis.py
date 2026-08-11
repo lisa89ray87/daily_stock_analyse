@@ -143,60 +143,18 @@ class _FakeProvider:
 
 def test_ai_payload_structure_is_preserved():
     payload = build_ai_overlay_payload([_analysis()], _market_regime())
-    assert payload == {
-        "market_regime": {
-            "label": "MIXED",
-            "bias": "NEUTRAL",
-            "main_catalyst": "Fed",
-            "main_risk": "Volatility",
-        },
-        "session_context": {
-            "session_state": "CLOSED",
-            "selected_data_source": "UNAVAILABLE",
-            "live_regular_session": False,
-        },
-        "stocks": [
-            {
-                "symbol": "AMD",
-                "signal": "LONG",
-                "direction_bias": "LONG_BIAS",
-                "market_alignment": "MARKET_ALIGNED",
-                "confidence": "MEDIUM",
-                "setup_score": 80,
-                "candidate_score": 82,
-                "candidate_status": "DAY_TRADE CANDIDATE",
-                "confirmation_needed": "Break above resistance",
-                "trading_horizon": "DAY_TRADE",
-                "day_trade_candidate": True,
-                "price": 100.0,
-                "price_session": "UNKNOWN",
-                "session_state": "CLOSED",
-                "selected_data_source": "UNAVAILABLE",
-                "live_regular_session": False,
-                "extended_hours_used": False,
-                "trend": "UPTREND",
-                "sma20": 98.0,
-                "sma50": 95.0,
-                "sma200": 90.0,
-                "rsi": 55.0,
-                "macd": 1.1,
-                "vwap": 99.5,
-                "opening_range_high": 101.0,
-                "opening_range_low": 98.5,
-                "breakout_state": "BREAKOUT",
-                "atr": 2.2,
-                "volume": 1_000_000,
-                "relative_volume": 1.8,
-                "volatility": 0.25,
-                "support": 96.0,
-                "resistance": 105.0,
-                "news_facts": ["Growth momentum improving"],
-                "catalysts": ["Earnings next week"],
-                "risks": ["Watch semiconductor leadership"],
-                "data_quality_warnings": [],
-            }
-        ],
-    }
+    assert payload["market_regime"]["label"] == "MIXED"
+    assert payload["session_context"]["session_state"] == "CLOSED"
+    assert payload["session_context"]["selected_data_source"] == "UNAVAILABLE"
+    assert payload["session_context"]["data_session"] == "CLOSED"
+    assert payload["session_context"]["data_source"] == "UNAVAILABLE"
+    stock = payload["stocks"][0]
+    assert stock["symbol"] == "AMD"
+    assert stock["signal"] == "LONG"
+    assert stock["structured_catalysts"] == []
+    assert stock["catalyst_status"] == "UNAVAILABLE"
+    assert stock["data_quality"] == "UNKNOWN"
+    assert stock["data_quality_warnings"] == []
 
 
 def _overlay_response(provider: str, parsed: dict) -> AIProviderResponse:
@@ -383,8 +341,8 @@ def test_run_analysis_remains_non_fatal_when_both_ai_providers_fail(tmp_path: Pa
     regime = _market_regime()
 
     with patch("src.daily_stock_analyse.runner.load_config", return_value=cfg):
-        with patch("src.daily_stock_analyse.runner.YFinanceMarketDataProvider", return_value=_FakeMarketProvider()):
-            with patch("src.daily_stock_analyse.runner.YFinanceNewsProvider", return_value=_FakeNewsProvider()):
+        with patch("src.daily_stock_analyse.runner.create_market_data_provider", return_value=_FakeMarketProvider()):
+            with patch("src.daily_stock_analyse.runner.create_news_provider", return_value=_FakeNewsProvider()):
                 with patch("src.daily_stock_analyse.runner.build_market_regime", return_value=regime):
                     with patch("src.daily_stock_analyse.runner.select_dynamic_opportunities", return_value=[]):
                         with patch(

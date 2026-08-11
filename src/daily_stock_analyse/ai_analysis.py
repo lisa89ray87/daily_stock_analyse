@@ -78,6 +78,10 @@ def build_ai_overlay_payload(
             "session_state": analyses[0].market_data.session_state if analyses else "CLOSED",
             "selected_data_source": analyses[0].market_data.selected_data_source if analyses else "UNAVAILABLE",
             "live_regular_session": analyses[0].market_data.live_regular_session if analyses else False,
+            "data_session": analyses[0].market_data.data_session if analyses else "CLOSED",
+            "data_source": analyses[0].market_data.data_source if analyses else "UNAVAILABLE",
+            "quote_timestamp": analyses[0].market_data.quote_timestamp if analyses else None,
+            "is_extended_hours": analyses[0].market_data.is_extended_hours if analyses else False,
         },
         "stocks": [
             {
@@ -96,6 +100,11 @@ def build_ai_overlay_payload(
                 "price_session": x.market_data.selected_price_session,
                 "session_state": x.market_data.session_state,
                 "selected_data_source": x.market_data.selected_data_source,
+                "data_session": x.market_data.data_session,
+                "data_source": x.market_data.data_source,
+                "quote_timestamp": x.market_data.quote_timestamp,
+                "is_extended_hours": x.market_data.is_extended_hours,
+                "data_quality": x.market_data.data_quality,
                 "live_regular_session": x.market_data.live_regular_session,
                 "extended_hours_used": x.market_data.extended_hours_used,
                 "trend": x.market_data.trend,
@@ -116,6 +125,18 @@ def build_ai_overlay_payload(
                 "resistance": x.market_data.resistance,
                 "news_facts": x.intelligence.facts,
                 "catalysts": x.intelligence.upcoming_catalysts,
+                "structured_catalysts": [
+                    {
+                        "headline": c.headline,
+                        "category": c.category,
+                        "importance": c.importance,
+                        "direction": c.catalyst_direction,
+                        "source": c.source,
+                        "published_at": c.published_at,
+                    }
+                    for c in x.intelligence.structured_catalysts
+                ],
+                "catalyst_status": x.intelligence.catalyst_status,
                 "risks": x.intelligence.interpretation,
                 "data_quality_warnings": x.data_quality.warnings,
             }

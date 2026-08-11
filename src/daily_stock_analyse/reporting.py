@@ -83,6 +83,26 @@ def render_markdown(report: DailyAnalysisReport, ai_overlay: dict | None = None)
     lines.append(f"- Configured analysis symbols: {', '.join(report.fixed_symbols)}")
     lines.append(f"- Dynamic symbols selected: {', '.join(report.dynamic_symbols) if report.dynamic_symbols else 'NONE'}")
 
+    lines.append("\n## News And Catalysts")
+    if report.news_catalysts:
+        for item in report.news_catalysts:
+            lines.append(
+                f"- {item.symbol} | {item.category} | {item.catalyst_direction} | {item.importance} | {item.headline}"
+            )
+    else:
+        lines.append("- NO_MATERIAL_CATALYST")
+
+    lines.append("\n## Historical Outcomes And Backtest")
+    if report.historical_performance:
+        hp = report.historical_performance
+        lines.append(f"- Trades: {hp.get('trades', 0)}")
+        lines.append(f"- Wins: {hp.get('wins', 0)}")
+        lines.append(f"- Losses: {hp.get('losses', 0)}")
+        lines.append(f"- Win Rate: {hp.get('win_rate', 0.0)}%")
+        lines.append(f"- Average Return: {hp.get('avg_return_pct', 0.0)}%")
+    else:
+        lines.append("- BACKTEST_UNAVAILABLE")
+
     if ai_overlay:
         lines.append("\n## AI Trading Conclusion")
         provider_display = ai_overlay.get("provider_display") or "UNAVAILABLE"
