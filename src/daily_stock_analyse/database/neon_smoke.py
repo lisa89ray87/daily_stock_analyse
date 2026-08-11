@@ -70,7 +70,25 @@ def _cleanup(database_url: str, run_id: str) -> None:
     with postgres_connection(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT to_regclass('public.signal_outcomes') AS name")
-            if (cur.fetchone() or {}).get("name"):
+            signal_outcomes_exists = bool((cur.fetchone() or {}).get("name"))
+            cur.execute("SELECT to_regclass('public.signals') AS name")
+            signals_exists = bool((cur.fetchone() or {}).get("name"))
+            cur.execute("SELECT to_regclass('public.analysis_runs') AS name")
+            analysis_runs_exists = bool((cur.fetchone() or {}).get("name"))
+
+            run_id_available = False
+            if signals_exists:
+                cur.execute(
+                    """
+                    SELECT 1 AS present
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'signals' AND column_name = 'run_id'
+                    LIMIT 1
+                    """
+                )
+                run_id_available = bool(cur.fetchone())
+
+            if signal_outcomes_exists and signals_exists and run_id_available:
                 cur.execute(
                     """
                     DELETE FROM signal_outcomes
@@ -78,11 +96,9 @@ def _cleanup(database_url: str, run_id: str) -> None:
                     """,
                     (run_id,),
                 )
-            cur.execute("SELECT to_regclass('public.signals') AS name")
-            if (cur.fetchone() or {}).get("name"):
+            if signals_exists and run_id_available:
                 cur.execute("DELETE FROM signals WHERE run_id = %s", (run_id,))
-            cur.execute("SELECT to_regclass('public.analysis_runs') AS name")
-            if (cur.fetchone() or {}).get("name"):
+            if analysis_runs_exists:
                 cur.execute("DELETE FROM analysis_runs WHERE run_id = %s", (run_id,))
         conn.commit()
 
@@ -99,6 +115,7 @@ def main() -> int:
     analysis = _smoke_analysis()
     run_id = repo._build_run_id(now, "US_REGULAR", regime.label, "NEON_SMOKE")
 
+    smoke_error: Exception | None = None
     try:
         with postgres_connection(database_url) as conn:
             ensure_schema(conn)
@@ -186,8 +203,18 @@ def main() -> int:
         if not any(row["symbol"] == "NEONSMOKE" and row["status"] == "TARGET_1" for row in backtest_rows):
             raise RuntimeError("backtest verification failed")
         print("backtest query PASS")
+    except Exception as exc:
+        smoke_error = exc
     finally:
-        _cleanup(database_url, run_id)
+        try:
+            _cleanup(database_url, run_id)
+        except Exception as cleanup_exc:
+            if smoke_error is None:
+                raise
+            print(f"cleanup SKIPPED | reason={cleanup_exc.__class__.__name__}")
+
+    if smoke_error is not None:
+        raise smoke_error
 
     with postgres_connection(database_url) as conn:
         with conn.cursor() as cur:

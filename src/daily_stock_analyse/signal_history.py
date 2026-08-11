@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 
 from .database import PostgresSignalRepository
 from .models import MarketRegime, StockAnalysis
@@ -9,7 +10,7 @@ from .models import MarketRegime, StockAnalysis
 
 @dataclass
 class OutcomeUpdate:
-    signal_id: int
+    signal_id: str | int | UUID
     status: str
     triggered: bool
     triggered_at: str | None

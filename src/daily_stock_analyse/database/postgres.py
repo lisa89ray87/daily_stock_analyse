@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from ..models import MarketRegime, StockAnalysis
 from .connection import postgres_connection
@@ -11,7 +12,7 @@ from .schema import ensure_schema
 
 @dataclass
 class OutcomeRecord:
-    signal_id: int
+    signal_id: str | int | UUID
     status: str
     triggered: bool
     triggered_at: str | None

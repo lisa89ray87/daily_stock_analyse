@@ -12,7 +12,7 @@ def evaluate_signal_outcomes(
 ) -> list[OutcomeUpdate]:
     updates: list[OutcomeUpdate] = []
     for row in open_rows:
-        signal_id = int(row["id"])
+        signal_id = row["id"]
         symbol = str(row["symbol"])
         signal = str(row["signal"])
         entry_trigger = _as_float(row["entry_trigger_price"])

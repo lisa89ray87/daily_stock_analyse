@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from src.daily_stock_analyse.outcomes import evaluate_signal_outcomes
 
@@ -47,3 +48,30 @@ def test_outcome_engine_marks_target_and_stop():
     statuses = {item.signal_id: item.status for item in updates}
     assert statuses[1] == "TARGET_2"
     assert statuses[2] == "TARGET_2"
+
+
+def test_outcome_engine_preserves_uuid_signal_id_values():
+    now = datetime.now(UTC)
+    signal_id = uuid4()
+    open_rows = [
+        {
+            "id": signal_id,
+            "symbol": "AAA",
+            "signal": "LONG",
+            "entry_trigger_price": 100.0,
+            "target_1": 102.0,
+            "target_2": 104.0,
+            "stop_loss": 98.0,
+            "invalidation_price": 98.0,
+            "triggered": False,
+            "triggered_at": None,
+            "expiry_at": (now + timedelta(hours=12)).isoformat(),
+            "mfe_pct": None,
+            "mae_pct": None,
+        }
+    ]
+
+    updates = evaluate_signal_outcomes(open_rows, latest_prices={"AAA": 104.5}, as_of_utc=now)
+
+    assert updates[0].signal_id == signal_id
+    assert updates[0].status == "TARGET_2"
