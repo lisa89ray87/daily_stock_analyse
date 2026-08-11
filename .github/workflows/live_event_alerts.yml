@@ -3,8 +3,11 @@ name: Live Event Alerts
 on:
   workflow_dispatch:
   schedule:
-    - cron: "25 13 * * 1-5"
-    - cron: "30 19 * * 1-5"
+    # Timezone-aware schedules remove the manual EDT/EST split.
+    - cron: "25 9 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "30 15 * * 1-5"
+      timezone: "America/New_York"
 
 env:
   SEND_EMAIL: "0"
@@ -12,7 +15,9 @@ env:
 jobs:
   live-event-alerts:
     concurrency:
-      group: live-event-alerts-${{ github.ref_name }}
+      # Event alerts are isolated from live trade alerts and from daily reports.
+      # A replacement run cancels the stale event-alert worker to prevent duplicate Telegram batches.
+      group: live-event-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 355
