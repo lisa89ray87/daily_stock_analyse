@@ -51,11 +51,16 @@ def _provider_diagnostics(provider: NewsProvider) -> str:
         "selected_instance",
         "http_status",
         "raw_result_count",
+        "candidate_result_count",
+        "relevant_result_count",
+        "quality_filtered_count",
         "parsed_result_count",
         "collected_count",
         "deduped_count",
         "freshness_input_count",
         "freshness_filtered_count",
+        "actionable_count",
+        "max_age_hours",
     )
     parts = [f"{key}={snapshot[key]}" for key in fields if key in snapshot]
     return " | " + " ".join(parts) if parts else ""
