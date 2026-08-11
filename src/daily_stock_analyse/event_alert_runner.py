@@ -6,7 +6,6 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from zoneinfo import ZoneInfo
 
 from .config import load_config
 from .event_alerts import EventAlert, detect_event_alerts
@@ -103,7 +102,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
 
     while True:
         now = utc_now()
-        if not is_weekday_in_timezone(now, cfg.morning_report_timezone):
+        if not is_weekday_in_timezone(now, cfg.live_market_timezone):
             print("Outside Monday-Friday schedule; event alert service stopped cleanly")
             return 0
 
@@ -115,8 +114,12 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         )
         print(f"EVENT_ALERT_EVALUATION | session={session.session_state} | New York={session.market_now.isoformat()}")
 
+        if session.session_state == "AFTER_HOURS":
+            print("EVENT_ALERT_EVALUATION | regular-session window ended; event alert service stopped cleanly")
+            return 0
+
         if session.session_state != "US_REGULAR":
-            print("EVENT_ALERT_EVALUATION | regular-session event alerts disabled outside US_REGULAR")
+            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR session")
             time.sleep(interval * 60)
             continue
 
@@ -159,3 +162,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         state["updated_at"] = now.isoformat()
         _save_state(state_path, state)
         time.sleep(interval * 60)
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_event_alerts())
