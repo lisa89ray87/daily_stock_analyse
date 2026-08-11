@@ -109,6 +109,7 @@ jobs:
           ALERT_MIN_RVOL: ${{ vars.ALERT_MIN_RVOL }}
           ALERT_COOLDOWN_MINUTES: ${{ vars.ALERT_COOLDOWN_MINUTES }}
           ENABLE_NEWS: ${{ vars.ENABLE_NEWS }}
+          NEWS_PROVIDER: "yfinance,searxng"
           NEWS_LOOKBACK_HOURS: ${{ vars.NEWS_LOOKBACK_HOURS }}
           DATABASE_ENABLED: ${{ vars.DATABASE_ENABLED }}
           ENABLE_OUTCOME_TRACKING: ${{ vars.ENABLE_OUTCOME_TRACKING }}
