@@ -73,6 +73,8 @@ jobs:
       - name: Run live alerts
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
         env:
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
