@@ -87,6 +87,11 @@ def _label_live_stock_alert(message: str) -> str:
         message = message.replace("Opening Range: UNAVAILABLE", "Opening Range: —")
         message = message.replace("Market: Unavailable", "Market: —")
 
+        # Make countertrend alerts immediately visible to a beginner while
+        # preserving the original market-alignment value and all trade data.
+        message = message.replace("Market: MARKET_COUNTERTREND", "Market: ⚠️ COUNTERTREND")
+        message = message.replace("Market: MARKET_ALIGNED", "Market: ✅ ALIGNED")
+
         # Group the decision-critical fields into a compact mobile block while
         # preserving every value produced by the live-alert engine.
         lines = message.splitlines()
