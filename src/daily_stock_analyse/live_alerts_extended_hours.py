@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime, time as dt_time
+from datetime import UTC, datetime, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
@@ -24,24 +24,40 @@ def _flag(name: str, default: bool = True) -> bool:
 
 
 def _extended_close() -> dt_time:
-    raw = os.getenv("LIVE_EXTENDED_CLOSE", "20:00").strip()
+    raw = os.getenv("LIVE_EXTENDED_CLOSE", "04:00").strip()
     hour, minute = (int(part) for part in raw.split(":", 1))
     return dt_time(hour=hour, minute=minute)
 
 
 def _fetch_extended_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
-    if frame.empty or not {"Open", "High", "Low", "Close", "Volume"}.issubset(frame.columns):
+    """Return the current regular session plus extended-hours bars through 04:00 ET.
+
+    The overnight window crosses midnight, so selecting bars with a simple
+    between_time() call would incorrectly discard 00:00-04:00 bars.
+    """
+    frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if frame.empty or not required.issubset(frame.columns):
         return []
+
     df = frame.copy()
     if df.index.tz is None:
         df.index = df.index.tz_localize(UTC)
     df.index = df.index.tz_convert(market_tz)
-    df = df.between_time("09:30", "20:00")
+
+    latest = df.index.max()
+    anchor_date = latest.date()
+    if latest.time() < dt_time(9, 30):
+        anchor_date -= timedelta(days=1)
+
+    overnight_close = _extended_close()
+    regular = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= overnight_close)
+    df = df[regular | overnight]
     if df.empty:
         return []
-    session_date = df.index.max().date()
-    df = df[df.index.date == session_date].dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+
+    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
     return [
         {
             "ts": ts.isoformat(),
@@ -66,9 +82,6 @@ def _after_hours_policy(now_utc: datetime, cfg):
     if session.session_state != "AFTER_HOURS" or not _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True):
         return base
 
-    # Extended trading runs from the regular close until LIVE_EXTENDED_CLOSE.
-    # LIVE_EXTENDED_CLOSE may be earlier than 16:00, which means the configured
-    # window crosses midnight (for example 20:00-04:00 overnight coverage).
     if not is_time_in_window(session.market_now.time(), dt_time(16, 0), _extended_close()):
         return engine.LiveSessionPolicy(
             session_state="AFTER_HOURS",
@@ -79,14 +92,17 @@ def _after_hours_policy(now_utc: datetime, cfg):
             allows_regular_session_candle_confirmation=False,
             reason=f"Extended-hours window ended at {_extended_close().strftime('%H:%M')} ET",
         )
+
     return engine.LiveSessionPolicy(
         session_state="AFTER_HOURS",
+        # Keep the normal trigger framework available, but explicitly disable
+        # regular-session-only Opening Range confirmation.
         allows_regular_session_triggers=True,
-        allows_opening_range_confirmation=True,
+        allows_opening_range_confirmation=False,
         allows_vwap_confirmation=True,
         allows_telegram_trade_entry_alerts=True,
         allows_regular_session_candle_confirmation=True,
-        reason="Extended-hours trigger engine enabled using extended-hours price/candle data",
+        reason="Extended-hours trigger engine enabled using fresh extended-hours price/candle data",
     )
 
 
