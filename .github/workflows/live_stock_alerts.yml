@@ -12,10 +12,11 @@ on:
           - "false"
           - "true"
   schedule:
-    # Timezone-aware schedules remove the manual EDT/EST split.
+    # Start before the regular session and restart before the extended session.
+    # The restart is intentional because GitHub-hosted jobs have a 6-hour execution limit.
     - cron: "25 9 * * 1-5"
       timezone: "America/New_York"
-    - cron: "30 15 * * 1-5"
+    - cron: "00 15 * * 1-5"
       timezone: "America/New_York"
 
 env:
@@ -24,8 +25,6 @@ env:
 jobs:
   live-alerts:
     concurrency:
-      # Only one live-trade-alert worker may run at a time.
-      # A restart replaces the stale worker instead of creating duplicate alerts.
       group: live-stock-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
@@ -88,17 +87,19 @@ jobs:
           MORNING_REPORT_TIME: ${{ vars.MORNING_REPORT_TIME }}
           MORNING_REPORT_TIMEZONE: ${{ vars.MORNING_REPORT_TIMEZONE }}
           LIVE_ALERT_ENABLED: "1"
+          LIVE_AFTER_HOURS_ALERTS_ENABLED: "1"
           LIVE_ALERT_INTERVAL_MINUTES: "5"
           LIVE_MARKET_TIMEZONE: "America/New_York"
           LIVE_MARKET_OPEN: "09:30"
           LIVE_MARKET_CLOSE: "16:00"
+          LIVE_EXTENDED_CLOSE: "20:00"
           ALERT_MIN_SETUP_SCORE: "70"
           ALERT_MIN_RVOL: "1.5"
           ALERT_COOLDOWN_MINUTES: "15"
           TELEGRAM_ENABLED: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m src.daily_stock_analyse.live_alerts
+        run: python -m src.daily_stock_analyse.live_alerts_extended_hours
 
       - name: Save alert state
         if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
