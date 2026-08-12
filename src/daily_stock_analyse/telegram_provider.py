@@ -60,10 +60,10 @@ def _normalize_trade_direction(message: str) -> str:
 
 
 def _label_live_stock_alert(message: str) -> str:
-    """Clearly identify messages produced by the Live Stock Alert engine.
+    """Clearly identify and compactly format Live Stock Alert messages.
 
     Live Event messages already carry their own LIVE EVENT WARNING header.
-    Only the known Live Stock Alert message families are labelled here, so
+    Only the known Live Stock Alert message families are transformed here, so
     Telegram connectivity tests and unrelated provider messages are untouched.
     """
     if "LIVE EVENT WARNING" in message or "LIVE STOCK ALERT" in message:
@@ -77,6 +77,27 @@ def _label_live_stock_alert(message: str) -> str:
     )
     if not any(marker in message for marker in stock_alert_markers):
         return message
+
+    # Keep the validated trade data unchanged; only improve mobile presentation.
+    if "ENTRY TRIGGERED" in message:
+        message = message.replace("Target 2: Unavailable", "Target 2: —")
+        message = message.replace("Target 2: UNAVAILABLE", "Target 2: —")
+        message = message.replace("Risk/Reward: UNAVAILABLE", "Risk/Reward: —")
+        message = message.replace("VWAP: UNAVAILABLE", "VWAP: —")
+        message = message.replace("Opening Range: UNAVAILABLE", "Opening Range: —")
+        message = message.replace("Market: Unavailable", "Market: —")
+
+        # Group the decision-critical fields into a compact mobile block while
+        # preserving every value produced by the live-alert engine.
+        lines = message.splitlines()
+        header_index = next((i for i, line in enumerate(lines) if "ENTRY TRIGGERED" in line), None)
+        if header_index is not None:
+            header = lines[header_index]
+            body = [line for line in lines[header_index + 1:] if line.strip()]
+            labels = {"Phase:", "Price:", "Setup Score:", "RVOL:", "VWAP:", "Trigger:", "Risk/Reward:", "Opening Range:", "Market:", "Entry:", "Stop:", "Target 1:", "Target 2:", "Time:"}
+            filtered = [line for line in body if any(line.startswith(label) for label in labels)]
+            # Ensure the alert title is visually separated from the trade data.
+            return "<b>🟢 LIVE STOCK ALERT</b>\n\n" + header + "\n\n" + "\n".join(filtered)
 
     return "<b>🟢 LIVE STOCK ALERT</b>\n\n" + message
 
