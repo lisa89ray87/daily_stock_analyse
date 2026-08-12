@@ -12,11 +12,14 @@ on:
           - "false"
           - "true"
   schedule:
-    # Start before the regular session and restart before the extended session.
-    # The restart is intentional because GitHub-hosted jobs have a 6-hour execution limit.
+    # GitHub-hosted jobs are limited to roughly 6 hours, so restart across the day.
     - cron: "25 9 * * 1-5"
       timezone: "America/New_York"
     - cron: "00 15 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "55 19 * * 1-5"
+      timezone: "America/New_York"
+    - cron: "55 1 * * 2-6"
       timezone: "America/New_York"
 
 env:
@@ -92,7 +95,7 @@ jobs:
           LIVE_MARKET_TIMEZONE: "America/New_York"
           LIVE_MARKET_OPEN: "09:30"
           LIVE_MARKET_CLOSE: "16:00"
-          LIVE_EXTENDED_CLOSE: "20:00"
+          LIVE_EXTENDED_CLOSE: "04:00"
           ALERT_MIN_SETUP_SCORE: "70"
           ALERT_MIN_RVOL: "1.5"
           ALERT_COOLDOWN_MINUTES: "15"
