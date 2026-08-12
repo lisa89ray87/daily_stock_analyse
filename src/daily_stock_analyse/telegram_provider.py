@@ -37,6 +37,10 @@ class TelegramBotProvider(TelegramProvider):
             return TelegramSendResult(success=False, disabled=True, error="TELEGRAM_BOT_TOKEN missing")
         if not self.chat_id:
             return TelegramSendResult(success=False, disabled=True, error="TELEGRAM_CHAT_ID missing")
+        if not message.strip():
+            return TelegramSendResult(success=False, error="Telegram message is empty")
+        if len(message) > 4096:
+            return TelegramSendResult(success=False, error=f"Telegram message exceeds 4096 characters ({len(message)})")
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {
@@ -52,10 +56,17 @@ class TelegramBotProvider(TelegramProvider):
             return TelegramSendResult(success=False, error=f"Telegram request failed: {exc.__class__.__name__}")
 
         if response.status_code >= 300:
+            detail = ""
+            try:
+                payload_error = response.json().get("description")
+                if payload_error:
+                    detail = f": {payload_error}"
+            except ValueError:
+                pass
             return TelegramSendResult(
                 success=False,
                 status_code=response.status_code,
-                error=f"Telegram API error: {response.status_code}",
+                error=f"Telegram API error: {response.status_code}{detail}",
             )
 
         return TelegramSendResult(success=True, status_code=response.status_code)
