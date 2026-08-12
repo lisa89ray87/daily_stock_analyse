@@ -59,6 +59,28 @@ def _normalize_trade_direction(message: str) -> str:
     return message[:header.start()] + replacement + message[header.end():]
 
 
+def _label_live_stock_alert(message: str) -> str:
+    """Clearly identify messages produced by the Live Stock Alert engine.
+
+    Live Event messages already carry their own LIVE EVENT WARNING header.
+    Only the known Live Stock Alert message families are labelled here, so
+    Telegram connectivity tests and unrelated provider messages are untouched.
+    """
+    if "LIVE EVENT WARNING" in message or "LIVE STOCK ALERT" in message:
+        return message
+
+    stock_alert_markers = (
+        "ENTRY TRIGGERED",
+        "TARGET REACHED",
+        "LONG SETUP INVALIDATED",
+        "SHORT SETUP INVALIDATED",
+    )
+    if not any(marker in message for marker in stock_alert_markers):
+        return message
+
+    return "<b>🟢 LIVE STOCK ALERT</b>\n\n" + message
+
+
 class TelegramBotProvider(TelegramProvider):
     def __init__(self, enabled: bool, bot_token: str | None, chat_id: str | None):
         self.enabled = enabled
@@ -79,6 +101,7 @@ class TelegramBotProvider(TelegramProvider):
         if not message.strip():
             return TelegramSendResult(success=False, error="Telegram message is empty")
 
+        message = _label_live_stock_alert(message)
         message = _normalize_trade_direction(message)
 
         if len(message) > 4096:
