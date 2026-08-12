@@ -1,0 +1,97 @@
+name: Apply trigger lifecycle fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, 'fix: prevent fresh trigger self-expiry') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Patch trigger lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/daily_stock_analyse/live_alerts.py')
+          s = p.read_text(encoding='utf-8')
+          old = s
+
+          s = s.replace(
+              '    timestamp: str | None\n    detail: str\n',
+              '    timestamp: str | None\n    observed_at: str | None\n    detail: str\n',
+              1,
+          )
+          s = s.replace(
+              '    timestamp: str | None,\n    detail: str,\n) -> TriggerEvidence:',
+              '    timestamp: str | None,\n    observed_at: str | None,\n    detail: str,\n) -> TriggerEvidence:',
+              1,
+          )
+          s = s.replace(
+              '            timestamp=timestamp,\n            detail=detail,\n',
+              '            timestamp=timestamp,\n            observed_at=observed_at,\n            detail=detail,\n',
+              1,
+          )
+          s = s.replace(
+              '        timestamp=timestamp,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
+              '        timestamp=timestamp,\n        observed_at=observed_at,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
+              1,
+          )
+          s = s.replace(
+              '        timestamp=trigger_ts,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
+              '        timestamp=trigger_ts,\n        observed_at=now_utc.isoformat() if price_confirmed else None,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
+              1,
+          )
+          s = s.replace(
+              '    evidence_ts = _parse_ts(evidence.timestamp)\n    if evidence_ts is None:\n        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")\n\n    if now_utc - evidence_ts > timedelta(minutes=max(1, cfg.v4_max_trigger_age_minutes)):\n',
+              '    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)\n    if evidence_ts is None:\n        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")\n\n    if now_utc - evidence_ts > timedelta(minutes=max(1, cfg.v4_max_trigger_age_minutes)):\n',
+              1,
+          )
+
+          if s == old:
+              raise SystemExit('No changes made; expected trigger lifecycle patterns were not found')
+          if 'observed_at: str | None' not in s:
+              raise SystemExit('TriggerEvidence observed_at field was not added')
+          if 'evidence.observed_at or evidence.timestamp' not in s:
+              raise SystemExit('Lifecycle age source was not changed')
+          p.write_text(s, encoding='utf-8')
+
+      - name: Targeted regression check
+        shell: python
+        run: |
+          from datetime import UTC, datetime, timedelta
+          from types import SimpleNamespace
+          from src.daily_stock_analyse.live_alerts import TriggerEvidence, _evaluate_trigger_lifecycle
+
+          now = datetime.now(UTC)
+          evidence = TriggerEvidence(
+              confirmed=True,
+              direction='LONG',
+              trigger_type='RETEST',
+              trigger_price=141.67,
+              reference_level=140.75,
+              current_price=141.67,
+              timestamp=(now - timedelta(minutes=30)).isoformat(),
+              observed_at=now.isoformat(),
+              detail='fresh trigger observed now',
+          )
+          analysis = SimpleNamespace(battle_plan=SimpleNamespace(invalidation_price=140.02))
+          cfg = SimpleNamespace(v4_max_trigger_age_minutes=10)
+          result = _evaluate_trigger_lifecycle(evidence, analysis, cfg, now)
+          assert result.state == 'TRIGGER_STILL_VALID', result
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/_apply_trigger_lifecycle_fix.yml
+          git add src/daily_stock_analyse/live_alerts.py .github/workflows/_apply_trigger_lifecycle_fix.yml
+          git commit -m 'fix: prevent fresh trigger self-expiry'
+          git push origin HEAD:main
