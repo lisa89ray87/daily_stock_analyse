@@ -71,3 +71,5 @@ jobs:
           git rm .github/workflows/apply_now_utc_fix.yml
           git commit -m "fix: pass live alert evaluation timestamp explicitly" || exit 0
           git push origin main
+
+# trigger
