@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 
 from . import live_alerts_extended_hours as engine
+from .live_alert_guards import install_live_alert_guards
 
 
 MAX_DATA_AGE = timedelta(minutes=15)
@@ -60,6 +61,7 @@ def run_live_alerts_overnight(base_path=None) -> int:
     os.environ.setdefault("LIVE_PRE_MARKET_ALERTS_ENABLED", "1")
     os.environ.setdefault("LIVE_AFTER_HOURS_ALERTS_ENABLED", "1")
     engine._fetch_extended_bars = _overnight_bars
+    install_live_alert_guards(engine)
     print("LIVE_OVERNIGHT | enabled=True | pre_market=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
     return engine.run_live_alerts_extended_hours(base_path)
 
