@@ -57,10 +57,12 @@ jobs:
         id: restore-alert-state
         uses: actions/cache/restore@v5
         with:
-          path: artifacts/alert_state.json
-          key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          # Versioned state namespace prevents an incompatible old state file
+          # from silently affecting the current alert lifecycle after code changes.
+          key: live-alert-state-v2-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            live-alert-state-${{ github.ref_name }}-
+            live-alert-state-v2-${{ github.ref_name }}-
+          path: artifacts/alert_state.json
 
       - name: Run Telegram connectivity test
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true' }}
@@ -115,7 +117,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: artifacts/alert_state.json
-          key: live-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          key: live-alert-state-v2-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload live artifacts
         if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
