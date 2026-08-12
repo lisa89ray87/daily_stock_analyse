@@ -15,9 +15,9 @@ def _setup_signature(event: dict) -> tuple:
         event.get("signal"),
         event.get("trigger_type"),
         _num(event.get("entry")),
-        _num(event.get("stop")),
-        _num(event.get("target1")),
-        _num(event.get("target2")),
+        _num(event.get("invalidation")),
+        _num(event.get("target_1")),
+        _num(event.get("target_2")),
     )
 
 
