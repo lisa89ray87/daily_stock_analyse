@@ -27,7 +27,7 @@ def _flag(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _int(name: str, default: int) -> int:
+def _int(name: str, default: int = 5) -> int:
     try:
         return int(os.getenv(name, str(default)))
     except ValueError:
@@ -82,9 +82,17 @@ def _event_explanation(event: EventAlert) -> str:
     detail = str(event.detail).lower()
     if event_type == "PRICE_CROSS":
         if "opening_range_high" in detail or "opening range high" in detail:
-            return "Price moved above the early-session high, which can indicate increasing short-term buying strength."
+            if "above" in detail:
+                return "Price moved above the early-session high, which can indicate increasing short-term buying strength."
+            if "below" in detail:
+                return "Price moved back below the early-session high, which can indicate rejection or weakening short-term momentum."
+            return "Price crossed the early-session high, so short-term momentum may be changing."
         if "opening_range_low" in detail or "opening range low" in detail:
-            return "Price moved below the early-session low, which can indicate increasing short-term selling pressure."
+            if "below" in detail:
+                return "Price moved below the early-session low, which can indicate increasing short-term selling pressure."
+            if "above" in detail:
+                return "Price moved back above the early-session low, which can indicate recovery from a recent weakness level."
+            return "Price crossed the early-session low, so short-term momentum may be changing."
         if "vwap" in detail and "above" in detail:
             return "Price moved above VWAP, indicating stronger intraday positioning relative to the session's average traded price."
         if "vwap" in detail and "below" in detail:
@@ -97,9 +105,9 @@ def _event_explanation(event: EventAlert) -> str:
             return "Price moved above the moving average, suggesting short-term momentum is strengthening."
         return "Price crossed a moving average, indicating a possible change in short-term momentum."
     if event_type == "RSI_THRESHOLD":
-        if "below 30" in detail or "below" in detail and "30" in detail:
+        if "below 30" in detail or ("below" in detail and "30" in detail):
             return "RSI has entered oversold territory, meaning recent selling has been unusually strong; it does not by itself mean price must rebound."
-        if "above 70" in detail or "above" in detail and "70" in detail:
+        if "above 70" in detail or ("above" in detail and "70" in detail):
             return "RSI has entered overbought territory, meaning recent buying has been unusually strong; it does not by itself mean price must fall."
         return "RSI crossed a threshold, indicating a notable change in recent price momentum."
     if event_type == "VOLUME_SPIKE":
@@ -166,7 +174,6 @@ def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
     if current_latest.time() < dt_time(4, 0):
         anchor_date -= timedelta(days=1)
 
-    # Previous regular session plus the current day's pre-market/overnight data.
     regular_and_after = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
     overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time < extended_close)
     premarket = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time >= extended_close) & (df.index.time < dt_time(9, 30))
