@@ -3,10 +3,11 @@ name: Live Event Alerts
 on:
   workflow_dispatch:
   schedule:
-    # Timezone-aware schedules remove the manual EDT/EST split.
+    # Start before the regular session and restart before the extended session.
+    # The restart is intentional because GitHub-hosted jobs have a 6-hour execution limit.
     - cron: "25 9 * * 1-5"
       timezone: "America/New_York"
-    - cron: "30 15 * * 1-5"
+    - cron: "00 15 * * 1-5"
       timezone: "America/New_York"
 
 env:
@@ -15,8 +16,6 @@ env:
 jobs:
   live-event-alerts:
     concurrency:
-      # Event alerts are isolated from live trade alerts and from daily reports.
-      # A replacement run cancels the stale event-alert worker to prevent duplicate Telegram batches.
       group: live-event-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
@@ -55,8 +54,10 @@ jobs:
           LIVE_MARKET_TIMEZONE: "America/New_York"
           LIVE_MARKET_OPEN: "09:30"
           LIVE_MARKET_CLOSE: "16:00"
+          LIVE_EXTENDED_CLOSE: "20:00"
           MORNING_REPORT_TIMEZONE: ${{ vars.MORNING_REPORT_TIMEZONE }}
           EVENT_ALERT_ENABLED: "1"
+          EVENT_ALERT_AFTER_HOURS_ENABLED: "1"
           EVENT_ALERT_INTERVAL_MINUTES: "5"
           EVENT_ALERT_MAX_WORKERS: "6"
           EVENT_ALERT_COOLDOWN_MINUTES: "15"
