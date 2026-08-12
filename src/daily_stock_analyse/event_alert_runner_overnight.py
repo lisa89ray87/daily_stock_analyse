@@ -9,12 +9,15 @@ import yfinance as yf
 from . import event_alert_runner as runner
 
 
+MAX_DATA_AGE = timedelta(minutes=15)
+
+
 def _overnight_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Return the current regular + post-market + overnight 5-minute bars.
+    """Return current regular + post-market + overnight 5-minute bars.
 
     The overnight window is 20:00-04:00 ET. If the upstream provider does not
-    expose overnight bars, the result is empty rather than manufacturing a
-    stale price or treating the last 20:00 quote as current.
+    expose fresh overnight bars, return an empty result rather than treating
+    the last regular/20:00 quote as current.
     """
     frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
@@ -27,6 +30,11 @@ def _overnight_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | 
     df.index = df.index.tz_convert(market_tz)
 
     latest = df.index.max()
+    now_local = datetime.now(UTC).astimezone(market_tz)
+    latest_local = latest.to_pydatetime()
+    if now_local - latest_local > MAX_DATA_AGE:
+        return []
+
     anchor_date = latest.date()
     if latest.time() < dt_time(9, 30):
         anchor_date -= timedelta(days=1)
@@ -61,7 +69,7 @@ def run_event_alerts_overnight(base_path: Path | None = None) -> int:
     # and keeps the implementation isolated from the regular-session engine.
     runner.os.environ["LIVE_EXTENDED_CLOSE"] = "04:00"
     runner._extended_hours_bars = _patched_extended_hours_bars
-    print("EVENT_ALERT_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance", flush=True)
+    print("EVENT_ALERT_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
     return runner.run_event_alerts(base_path)
 
 
