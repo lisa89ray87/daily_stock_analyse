@@ -31,16 +31,11 @@ def _extended_close() -> dt_time:
 
 
 def _fetch_extended_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Return the current regular session plus extended-hours bars through 04:00 ET.
-
-    The overnight window crosses midnight, so selecting bars with a simple
-    between_time() call would incorrectly discard 00:00-04:00 bars.
-    """
+    """Return fresh 5-minute bars for regular, pre-market, after-hours and overnight."""
     frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
         return []
-
     df = frame.copy()
     if df.index.tz is None:
         df.index = df.index.tz_localize(UTC)
@@ -48,13 +43,13 @@ def _fetch_extended_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
 
     latest = df.index.max()
     anchor_date = latest.date()
-    if latest.time() < dt_time(9, 30):
+    if latest.time() < dt_time(4, 0):
         anchor_date -= timedelta(days=1)
 
-    overnight_close = _extended_close()
-    regular = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
-    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= overnight_close)
-    df = df[regular | overnight]
+    regular_and_after = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time < dt_time(4, 0))
+    premarket = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time >= dt_time(4, 0)) & (df.index.time < dt_time(9, 30))
+    df = df[regular_and_after | overnight | premarket]
     if df.empty:
         return []
 
@@ -72,7 +67,7 @@ def _fetch_extended_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
     ]
 
 
-def _after_hours_policy(now_utc: datetime, cfg):
+def _session_policy(now_utc: datetime, cfg):
     base = _ORIGINAL_POLICY(now_utc, cfg)
     session = get_market_session_status(
         now_utc,
@@ -80,6 +75,18 @@ def _after_hours_policy(now_utc: datetime, cfg):
         market_open_hhmm=cfg.live_market_open,
         market_close_hhmm=cfg.live_market_close,
     )
+
+    if session.session_state == "PRE_MARKET" and _flag("LIVE_PRE_MARKET_ALERTS_ENABLED", True):
+        return engine.LiveSessionPolicy(
+            session_state="PRE_MARKET",
+            allows_regular_session_triggers=True,
+            allows_opening_range_confirmation=False,
+            allows_vwap_confirmation=True,
+            allows_telegram_trade_entry_alerts=True,
+            allows_regular_session_candle_confirmation=True,
+            reason="Pre-market trigger engine enabled using fresh extended-hours price/candle data",
+        )
+
     if session.session_state != "AFTER_HOURS" or not _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True):
         return base
 
@@ -107,10 +114,7 @@ def _after_hours_policy(now_utc: datetime, cfg):
 
 def _context_with_extended_hours(symbol_analysis, cfg):
     context = _ORIGINAL_CONTEXT(symbol_analysis, cfg)
-    if getattr(symbol_analysis.market_data, "session_state", None) == "AFTER_HOURS":
-        # The regular-session opening range must never become an overnight
-        # trigger reference. Keep the full bar history for EMA/momentum/VWAP,
-        # but remove OR levels from the extended-hours decision context.
+    if getattr(symbol_analysis.market_data, "session_state", None) in {"PRE_MARKET", "AFTER_HOURS"}:
         context["or_high"] = None
         context["or_low"] = None
     return context
@@ -132,27 +136,38 @@ def _analyze_symbol_with_extended_hours(symbol, cfg, regime_label, sector_streng
         market_open_hhmm=cfg.live_market_open,
         market_close_hhmm=cfg.live_market_close,
     )
-    if session.session_state != "AFTER_HOURS" or not _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True):
+
+    extended_session = session.session_state in {"PRE_MARKET", "AFTER_HOURS"}
+    enabled = (
+        (session.session_state == "PRE_MARKET" and _flag("LIVE_PRE_MARKET_ALERTS_ENABLED", True))
+        or (session.session_state == "AFTER_HOURS" and _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True))
+    )
+    if not extended_session or not enabled:
         return analysis
 
     bars = _fetch_extended_bars(symbol, ZoneInfo(cfg.live_market_timezone))
     if not bars:
-        analysis.market_data.delayed_note = "Extended-hours alert evaluation skipped: extended-hours 5-minute bars unavailable."
-        analysis.market_data.session_state = "AFTER_HOURS"
+        analysis.market_data.delayed_note = f"{session.session_state} alert evaluation skipped: fresh extended-hours 5-minute bars unavailable."
+        analysis.market_data.session_state = session.session_state
         return analysis
 
     md: MarketData = analysis.market_data
-    md.session_state = "AFTER_HOURS"
+    md.session_state = session.session_state
     md.extended_intraday_bars = bars
     md.intraday_bars = bars
     md.price = float(bars[-1]["close"])
-    md.after_hours_price = md.price
+    if session.session_state == "PRE_MARKET":
+        md.premarket_price = md.price
+        md.latest_extended_session = "PREMARKET"
+        md.selected_price_session = "PREMARKET"
+    else:
+        md.after_hours_price = md.price
+        md.latest_extended_session = "AFTER_HOURS"
+        md.selected_price_session = "AFTER_HOURS"
     md.latest_extended_price = md.price
-    md.latest_extended_session = "AFTER_HOURS"
-    md.selected_price_session = "AFTER_HOURS"
     md.extended_hours_used = True
     md.is_extended_hours = True
-    md.data_session = "AFTER_HOURS"
+    md.data_session = session.session_state
     md.data_source = "YFINANCE_EXTENDED_5M"
     md.quote_timestamp = datetime.now(UTC).isoformat()
     md.intraday_timestamp = md.quote_timestamp
@@ -160,18 +175,15 @@ def _analyze_symbol_with_extended_hours(symbol, cfg, regime_label, sector_streng
 
 
 def run_live_alerts_extended_hours(base_path=None) -> int:
-    if not _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True):
-        return engine.run_live_alerts(base_path)
-
     original_policy = engine._live_session_policy
     original_analyzer = engine._analyze_symbol
     original_context = engine._compute_intraday_context
-    engine._live_session_policy = _after_hours_policy
+    engine._live_session_policy = _session_policy
     engine._analyze_symbol = _analyze_symbol_with_extended_hours
     engine._compute_intraday_context = _context_with_extended_hours
     try:
-        print(f"LIVE_AFTER_HOURS | enabled=True | extended_close={_extended_close().strftime('%H:%M')} ET")
-        print("LIVE_AFTER_HOURS | strategy=EXTENDED_HOURS | opening_range_trigger=disabled | vwap=enabled | overnight_bars=enabled")
+        print(f"LIVE_EXTENDED | pre_market={_flag('LIVE_PRE_MARKET_ALERTS_ENABLED', True)} | after_hours={_flag('LIVE_AFTER_HOURS_ALERTS_ENABLED', True)} | extended_close={_extended_close().strftime('%H:%M')} ET")
+        print("LIVE_EXTENDED | strategy=SESSION_AWARE | opening_range_trigger=regular_only | extended_price_candles=enabled")
         return engine.run_live_alerts(base_path)
     finally:
         engine._live_session_policy = original_policy
