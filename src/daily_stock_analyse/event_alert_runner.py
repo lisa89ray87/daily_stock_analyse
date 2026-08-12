@@ -15,6 +15,7 @@ from .config import load_config
 from .event_alerts import EventAlert, detect_event_alerts
 from .market_hours import get_market_session_status, is_weekday_in_timezone, utc_now
 from .providers import create_market_data_provider
+from .session_windows import is_time_in_window
 from .telegram_provider import TelegramBotProvider
 
 
@@ -95,7 +96,7 @@ def _message(events: list[EventAlert], market_time: str, session_state: str) -> 
 
 
 def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Fetch the current regular + extended session 5-minute bars, including overnight when the provider exposes them."""
+    """Fetch regular + extended 5-minute bars, including overnight through 04:00 ET."""
     frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
@@ -105,36 +106,32 @@ def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
         df.index = df.index.tz_localize(UTC)
     df.index = df.index.tz_convert(market_tz)
 
-    # Keep the regular session plus post-market and overnight (through 04:00 ET).
-    # At 00:00-04:00 the overnight bars belong to the prior U.S. trading date.
     overnight_close = dt_time(4, 0)
     current_latest = df.index.max()
     anchor_date = current_latest.date()
     if current_latest.time() < dt_time(9, 30):
-        from datetime import timedelta as _timedelta
-        anchor_date = anchor_date - _timedelta(days=1)
+        anchor_date -= timedelta(days=1)
 
     regular_or_evening = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
-    overnight = (df.index.date == anchor_date + _timedelta(days=1)) & (df.index.time <= overnight_close)
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= overnight_close)
     df = df[regular_or_evening | overnight]
     if df.empty:
         return []
     df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-    out: list[dict[str, float | str]] = []
-    for ts, row in df.iterrows():
-        out.append({
+    return [
+        {
             "ts": ts.isoformat(),
             "open": float(row["Open"]),
             "high": float(row["High"]),
             "low": float(row["Low"]),
             "close": float(row["Close"]),
             "volume": float(row["Volume"]),
-        })
-    return out
+        }
+        for ts, row in df.iterrows()
+    ]
 
 
 def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[str, list[EventAlert], str | None]:
-    """Fetch market data and detect events for one symbol in a worker thread."""
     print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=start", flush=True)
     try:
         print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_start", flush=True)
@@ -154,22 +151,13 @@ def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[st
                 md.latest_extended_session = "AFTER_HOURS"
                 md.extended_hours_used = True
                 md.is_extended_hours = True
-                print(
-                    f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_complete | bars={len(extended)}",
-                    flush=True,
-                )
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_complete | bars={len(extended)}", flush=True)
             else:
-                print(
-                    f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_unavailable | status=DATA_LIMITED",
-                    flush=True,
-                )
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_unavailable | status=DATA_LIMITED", flush=True)
 
         analysis = SimpleNamespace(symbol=symbol, market_data=md)
         events = detect_event_alerts(analysis, cfg)
-        print(
-            f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)} | session={session_state}",
-            flush=True,
-        )
+        print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)} | session={session_state}", flush=True)
         return symbol, events, None
     except Exception as exc:
         error = repr(exc)
@@ -178,30 +166,19 @@ def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[st
 
 
 def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_workers: int, session_state: str) -> tuple[list[EventAlert], int, int]:
-    """Evaluate symbols concurrently with a bounded worker pool."""
     worker_count = min(max(1, max_workers), max(1, len(symbols)))
-    print(
-        f"EVENT_ALERT_CONCURRENCY | stage=start | symbols={len(symbols)} | max_workers={worker_count} | session={session_state}",
-        flush=True,
-    )
-
+    print(f"EVENT_ALERT_CONCURRENCY | stage=start | symbols={len(symbols)} | max_workers={worker_count} | session={session_state}", flush=True)
     results: dict[str, list[EventAlert]] = {}
     errors = 0
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="event-alert") as executor:
-        futures = {
-            executor.submit(_evaluate_symbol, symbol, provider, cfg, session_state): symbol
-            for symbol in symbols
-        }
+        futures = {executor.submit(_evaluate_symbol, symbol, provider, cfg, session_state): symbol for symbol in symbols}
         for future in as_completed(futures):
             symbol = futures[future]
             try:
                 result_symbol, events, error = future.result()
             except Exception as exc:
                 result_symbol, events, error = symbol, [], repr(exc)
-                print(
-                    f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={error}",
-                    flush=True,
-                )
+                print(f"EVENT_ALERT_DIAGNOSTIC | symbol={symbol} | status=ERROR | error={error}", flush=True)
             results[result_symbol] = events
             if error is not None:
                 errors += 1
@@ -212,11 +189,7 @@ def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_worker
         events = results.get(symbol, [])
         detected += len(events)
         pending_events.extend(events)
-
-    print(
-        f"EVENT_ALERT_CONCURRENCY | stage=complete | detected={detected} | errors={errors} | session={session_state}",
-        flush=True,
-    )
+    print(f"EVENT_ALERT_CONCURRENCY | stage=complete | detected={detected} | errors={errors} | session={session_state}", flush=True)
     return pending_events, detected, errors
 
 
@@ -226,14 +199,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
 
     cfg = load_config(repo_root)
     extended_close = _hhmm("LIVE_EXTENDED_CLOSE", "04:00")
-    _startup(
-        "config",
-        live_provider=cfg.live_data_provider,
-        timezone=cfg.live_market_timezone,
-        max_workers=cfg.event_alert_max_workers,
-        after_hours_enabled=_flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True),
-        extended_close=extended_close.strftime("%H:%M"),
-    )
+    _startup("config", live_provider=cfg.live_data_provider, timezone=cfg.live_market_timezone, max_workers=cfg.event_alert_max_workers, after_hours_enabled=_flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True), extended_close=extended_close.strftime("%H:%M"))
 
     if not _flag("EVENT_ALERT_ENABLED", True):
         print("EVENT_ALERT_ENABLED=0, exiting without event alerts.", flush=True)
@@ -242,20 +208,13 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     interval = max(1, _int("EVENT_ALERT_INTERVAL_MINUTES", 5))
     cooldown = max(0, _int("EVENT_ALERT_COOLDOWN_MINUTES", 15))
     state_path = repo_root / "artifacts" / "event_alert_state.json"
-
     state = _load_state(state_path)
     _startup("state", path=state_path, symbols=len(state.get("symbols", {})))
 
-    telegram = TelegramBotProvider(
-        enabled=cfg.telegram_enabled,
-        bot_token=cfg.telegram_bot_token,
-        chat_id=cfg.telegram_chat_id,
-    )
+    telegram = TelegramBotProvider(enabled=cfg.telegram_enabled, bot_token=cfg.telegram_bot_token, chat_id=cfg.telegram_chat_id)
     _startup("telegram", configured=telegram.is_configured)
-
     provider = create_market_data_provider(cfg.live_data_provider)
     _startup("market_provider", provider=cfg.live_data_provider)
-
     symbols = list(dict.fromkeys(cfg.fixed_watchlist + cfg.candidate_universe))
     _startup("symbols", count=len(symbols), symbols=",".join(symbols))
 
@@ -276,41 +235,22 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             print("Outside Monday-Friday schedule; event alert service stopped cleanly", flush=True)
             return 0
 
-        session = get_market_session_status(
-            now,
-            market_timezone=cfg.live_market_timezone,
-            market_open_hhmm=cfg.live_market_open,
-            market_close_hhmm=cfg.live_market_close,
-        )
-        print(
-            f"EVENT_ALERT_EVALUATION | cycle={cycle} | session={session.session_state} | "
-            f"New York={session.market_now.isoformat()}",
-            flush=True,
-        )
+        session = get_market_session_status(now, market_timezone=cfg.live_market_timezone, market_open_hhmm=cfg.live_market_open, market_close_hhmm=cfg.live_market_close)
+        print(f"EVENT_ALERT_EVALUATION | cycle={cycle} | session={session.session_state} | New York={session.market_now.isoformat()}", flush=True)
 
         if session.session_state == "AFTER_HOURS":
             if not _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
                 print("EVENT_ALERT_EVALUATION | extended-hours alerts disabled by configuration", flush=True)
                 return 0
-            if session.market_now.time() >= extended_close:
-                print(
-                    f"EVENT_ALERT_EVALUATION | extended-hours window ended at {extended_close.strftime('%H:%M')} ET; stopped cleanly",
-                    flush=True,
-                )
+            if not is_time_in_window(session.market_now.time(), dt_time(16, 0), extended_close):
+                print(f"EVENT_ALERT_EVALUATION | extended-hours window ended at {extended_close.strftime('%H:%M')} ET; stopped cleanly", flush=True)
                 return 0
         elif session.session_state != "US_REGULAR":
             print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR or AFTER_HOURS session", flush=True)
             time.sleep(interval * 60)
             continue
 
-        detected_events, detected, errors = _evaluate_symbols_concurrently(
-            symbols,
-            provider,
-            cfg,
-            cfg.event_alert_max_workers,
-            session.session_state,
-        )
-
+        detected_events, detected, errors = _evaluate_symbols_concurrently(symbols, provider, cfg, cfg.event_alert_max_workers, session.session_state)
         pending: list[EventAlert] = []
         suppressed = 0
         for event in detected_events:
@@ -319,21 +259,12 @@ def run_event_alerts(base_path: Path | None = None) -> int:
                 continue
             pending.append(event)
 
-        print(
-            f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | "
-            f"pending={len(pending)} | cooldown_suppressed={suppressed} | "
-            f"symbol_errors={errors} | telegram_configured={telegram.is_configured} | session={session.session_state}",
-            flush=True,
-        )
+        print(f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | pending={len(pending)} | cooldown_suppressed={suppressed} | symbol_errors={errors} | telegram_configured={telegram.is_configured} | session={session.session_state}", flush=True)
 
         if pending:
             message = _message(pending, session.market_now.isoformat(), session.session_state)
             result = telegram.send_message(message)
-            print(
-                f"EVENT_ALERT_TELEGRAM | attempted=True | success={result.success} | "
-                f"status_code={result.status_code} | error={result.error or 'NONE'} | session={session.session_state}",
-                flush=True,
-            )
+            print(f"EVENT_ALERT_TELEGRAM | attempted=True | success={result.success} | status_code={result.status_code} | error={result.error or 'NONE'} | session={session.session_state}", flush=True)
             if result.success:
                 for event in pending:
                     _mark_sent(state, event, now)
