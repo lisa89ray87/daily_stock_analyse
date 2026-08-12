@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import time
@@ -75,29 +76,46 @@ def _mark_sent(state: dict, event: EventAlert, now) -> None:
     state.setdefault("symbols", {}).setdefault(event.symbol, {})[event.key] = now.isoformat()
 
 
-def _message(events: list[EventAlert], market_time: str, session_state: str) -> str:
-    if session_state == "AFTER_HOURS":
-        session_label = "EXTENDED / OVERNIGHT"
-    else:
-        session_label = "REGULAR"
-    lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{market_time} | {session_label}</i>", ""]
+def _message(events: list[EventAlert], market_time: str, session_state: str, batch_number: int = 1, batch_count: int = 1) -> str:
+    session_label = "EXTENDED / OVERNIGHT" if session_state == "AFTER_HOURS" else "REGULAR"
+    batch_label = f" | Batch {batch_number}/{batch_count}" if batch_count > 1 else ""
+    lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{html.escape(market_time)} | {session_label}{batch_label}</i>", ""]
     for event in events:
         emoji = "🟢" if event.direction == "BULLISH" else "🔴" if event.direction == "BEARISH" else "🟡"
         price = f"${event.price:.2f}" if event.price is not None else "N/A"
         lines.extend([
-            f"<b>{emoji} {event.symbol} — {event.event_type}</b>",
+            f"<b>{emoji} {html.escape(event.symbol)} — {html.escape(event.event_type)}</b>",
             f"Price: {price}",
-            f"{event.detail}",
-            f"Severity: {event.severity}",
+            html.escape(str(event.detail)),
+            f"Severity: {html.escape(event.severity)}",
             "",
         ])
     lines.append("<i>Early warning only — not a confirmed trade entry.</i>")
     return "\n".join(lines)
 
 
+def _message_batches(events: list[EventAlert], market_time: str, session_state: str, max_chars: int = 3800) -> list[list[EventAlert]]:
+    """Split event alerts into Telegram-safe batches below the 4096-char API limit."""
+    if not events:
+        return []
+    batches: list[list[EventAlert]] = []
+    current: list[EventAlert] = []
+    for event in events:
+        candidate = current + [event]
+        # Leave headroom for the batch label and HTML envelope.
+        if current and len(_message(candidate, market_time, session_state, 1, 99)) > max_chars:
+            batches.append(current)
+            current = [event]
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
     """Fetch regular + extended 5-minute bars, including overnight through 04:00 ET."""
-    frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+    frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
         return []
@@ -262,12 +280,21 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         print(f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | pending={len(pending)} | cooldown_suppressed={suppressed} | symbol_errors={errors} | telegram_configured={telegram.is_configured} | session={session.session_state}", flush=True)
 
         if pending:
-            message = _message(pending, session.market_now.isoformat(), session.session_state)
-            result = telegram.send_message(message)
-            print(f"EVENT_ALERT_TELEGRAM | attempted=True | success={result.success} | status_code={result.status_code} | error={result.error or 'NONE'} | session={session.session_state}", flush=True)
-            if result.success:
-                for event in pending:
-                    _mark_sent(state, event, now)
+            batches = _message_batches(pending, session.market_now.isoformat(), session.session_state)
+            print(f"EVENT_ALERT_TELEGRAM_BATCH | batches={len(batches)} | events={len(pending)} | session={session.session_state}", flush=True)
+            delivered = 0
+            for index, batch in enumerate(batches, start=1):
+                message = _message(batch, session.market_now.isoformat(), session.session_state, index, len(batches))
+                result = telegram.send_message(message)
+                print(f"EVENT_ALERT_TELEGRAM_BATCH | batch={index}/{len(batches)} | events={len(batch)} | chars={len(message)} | success={result.success} | status_code={result.status_code} | error={result.error or 'NONE'} | session={session.session_state}", flush=True)
+                if result.success:
+                    delivered += len(batch)
+                    for event in batch:
+                        _mark_sent(state, event, now)
+                else:
+                    print(f"EVENT_ALERT_TELEGRAM | attempted=True | success=False | failed_batch={index}/{len(batches)} | delivered_events={delivered} | session={session.session_state}", flush=True)
+                    break
+            print(f"EVENT_ALERT_TELEGRAM | attempted=True | success={delivered == len(pending)} | delivered={delivered}/{len(pending)} | session={session.session_state}", flush=True)
         else:
             print("EVENT_ALERT_TELEGRAM | attempted=False | reason=NO_NEW_EVENTS", flush=True)
 
