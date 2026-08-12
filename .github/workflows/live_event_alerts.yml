@@ -71,7 +71,7 @@ jobs:
           TELEGRAM_ENABLED: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m src.daily_stock_analyse.event_alert_runner
+        run: python -m src.daily_stock_analyse.event_alert_runner_overnight
 
       - name: Save event alert state
         if: ${{ always() }}
