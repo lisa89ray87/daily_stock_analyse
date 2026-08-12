@@ -51,17 +51,14 @@ jobs:
           mkdir -p tests
           cat > tests/test_live_alerts_now_utc.py <<'PY'
           import inspect
-
           from src.daily_stock_analyse.live_alerts import _build_live_setup_assessment
-
-          def test_live_setup_assessment_receives_now_utc():
-              assert "now_utc" in inspect.signature(_build_live_setup_assessment).parameters
+          assert "now_utc" in inspect.signature(_build_live_setup_assessment).parameters
           PY
 
       - name: Verify
         run: |
           python -m compileall -q src
-          python -m pytest -q tests/test_live_alerts_now_utc.py
+          python tests/test_live_alerts_now_utc.py
 
       - name: Commit fix to main
         run: |
@@ -69,7 +66,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/daily_stock_analyse/live_alerts.py tests/test_live_alerts_now_utc.py .github/workflows/apply_now_utc_fix.yml
           git rm .github/workflows/apply_now_utc_fix.yml
-          git commit -m "fix: pass live alert evaluation timestamp explicitly" || exit 0
+          git commit -m "fix: pass live alert evaluation timestamp explicitly"
           git push origin main
 
-# trigger
+# trigger retry
