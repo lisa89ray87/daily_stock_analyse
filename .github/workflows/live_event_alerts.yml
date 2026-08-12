@@ -3,7 +3,6 @@ name: Live Event Alerts
 on:
   workflow_dispatch:
   schedule:
-    # GitHub-hosted jobs are limited to roughly 6 hours, so restart across the day.
     - cron: "25 9 * * 1-5"
       timezone: "America/New_York"
     - cron: "00 15 * * 1-5"
@@ -44,9 +43,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: artifacts/event_alert_state.json
-          key: live-event-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          key: live-event-alert-state-v2-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            live-event-alert-state-${{ github.ref_name }}-
+            live-event-alert-state-v2-${{ github.ref_name }}-
 
       - name: Run live event alerts
         env:
@@ -79,12 +78,12 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: artifacts/event_alert_state.json
-          key: live-event-alert-state-${{ github.ref_name }}-${{ github.run_id }}
+          key: live-event-alert-state-v2-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload event alert artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v6
         with:
-          name: live-event-alert-artifacts
+          name: live-event-alert-artifacts-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
