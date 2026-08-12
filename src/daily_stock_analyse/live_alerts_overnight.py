@@ -13,8 +13,8 @@ MAX_DATA_AGE = timedelta(minutes=15)
 
 
 def _overnight_bars(symbol: str, market_tz: ZoneInfo):
-    """Return fresh regular + extended 5-minute bars through 04:00 ET."""
-    frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+    """Return fresh regular + pre-market + after-hours + overnight 5-minute bars through 04:00 ET."""
+    frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
         return []
@@ -31,12 +31,13 @@ def _overnight_bars(symbol: str, market_tz: ZoneInfo):
         return []
 
     anchor_date = latest.date()
-    if latest.time() < dt_time(9, 30):
+    if latest.time() < dt_time(4, 0):
         anchor_date -= timedelta(days=1)
 
     regular_and_evening = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
-    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= dt_time(4, 0))
-    df = df[regular_and_evening | overnight]
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time < dt_time(4, 0))
+    premarket = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time >= dt_time(4, 0)) & (df.index.time < dt_time(9, 30))
+    df = df[regular_and_evening | overnight | premarket]
     if df.empty:
         return []
 
@@ -55,11 +56,11 @@ def _overnight_bars(symbol: str, market_tz: ZoneInfo):
 
 
 def run_live_alerts_overnight(base_path=None) -> int:
-    # Preserve the existing live-alert engine and its strict risk/trigger gates.
-    # Only replace the extended-hours data window and cutoff.
     os.environ["LIVE_EXTENDED_CLOSE"] = "04:00"
+    os.environ.setdefault("LIVE_PRE_MARKET_ALERTS_ENABLED", "1")
+    os.environ.setdefault("LIVE_AFTER_HOURS_ALERTS_ENABLED", "1")
     engine._fetch_extended_bars = _overnight_bars
-    print("LIVE_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
+    print("LIVE_OVERNIGHT | enabled=True | pre_market=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
     return engine.run_live_alerts_extended_hours(base_path)
 
 
