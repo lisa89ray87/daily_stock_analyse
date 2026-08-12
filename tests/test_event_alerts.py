@@ -4,10 +4,16 @@ from src.daily_stock_analyse.event_alerts import detect_event_alerts
 from src.daily_stock_analyse.models import MarketData
 
 
-def _analysis(bars, *, vwap=None):
+def _analysis(bars, *, vwap=None, session_state="US_REGULAR", extended_bars=None):
     return SimpleNamespace(
         symbol="TEST",
-        market_data=MarketData(symbol="TEST", intraday_bars=bars, vwap=vwap),
+        market_data=MarketData(
+            symbol="TEST",
+            intraday_bars=bars,
+            extended_intraday_bars=extended_bars or [],
+            vwap=vwap,
+            session_state=session_state,
+        ),
     )
 
 
@@ -44,3 +50,16 @@ def test_no_event_for_small_move():
     cfg = SimpleNamespace(event_alert_price_change_pct=2.0, event_alert_volume_spike_multiplier=10.0)
     events = detect_event_alerts(analysis, cfg)
     assert not any(event.event_type == "PRICE_CHANGE" for event in events)
+
+
+def test_after_hours_uses_extended_intraday_bars():
+    regular = _bars([100.0, 100.1], [100, 100])
+    extended = _bars([100.0, 100.1, 100.1, 102.5], [100, 100, 100, 100])
+    analysis = _analysis(
+        regular,
+        session_state="AFTER_HOURS",
+        extended_bars=extended,
+    )
+    cfg = SimpleNamespace(event_alert_price_change_pct=2.0, event_alert_volume_spike_multiplier=10.0)
+    events = detect_event_alerts(analysis, cfg)
+    assert any(event.event_type == "PRICE_CHANGE" for event in events)
