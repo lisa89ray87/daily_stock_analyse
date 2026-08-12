@@ -9,6 +9,7 @@ import yfinance as yf
 from . import live_alerts as engine
 from .market_hours import get_market_session_status
 from .models import MarketData
+from .session_windows import is_time_in_window
 
 
 _ORIGINAL_POLICY = engine._live_session_policy
@@ -64,7 +65,11 @@ def _after_hours_policy(now_utc: datetime, cfg):
     )
     if session.session_state != "AFTER_HOURS" or not _flag("LIVE_AFTER_HOURS_ALERTS_ENABLED", True):
         return base
-    if session.market_now.time() >= _extended_close():
+
+    # Extended trading runs from the regular close until LIVE_EXTENDED_CLOSE.
+    # LIVE_EXTENDED_CLOSE may be earlier than 16:00, which means the configured
+    # window crosses midnight (for example 20:00-04:00 overnight coverage).
+    if not is_time_in_window(session.market_now.time(), dt_time(16, 0), _extended_close()):
         return engine.LiveSessionPolicy(
             session_state="AFTER_HOURS",
             allows_regular_session_triggers=False,
@@ -72,7 +77,7 @@ def _after_hours_policy(now_utc: datetime, cfg):
             allows_vwap_confirmation=False,
             allows_telegram_trade_entry_alerts=False,
             allows_regular_session_candle_confirmation=False,
-            reason=f"After-hours window ended at {_extended_close().strftime('%H:%M')} ET",
+            reason=f"Extended-hours window ended at {_extended_close().strftime('%H:%M')} ET",
         )
     return engine.LiveSessionPolicy(
         session_state="AFTER_HOURS",
@@ -81,7 +86,7 @@ def _after_hours_policy(now_utc: datetime, cfg):
         allows_vwap_confirmation=True,
         allows_telegram_trade_entry_alerts=True,
         allows_regular_session_candle_confirmation=True,
-        reason="After-hours trigger engine enabled using extended-hours price/candle data",
+        reason="Extended-hours trigger engine enabled using extended-hours price/candle data",
     )
 
 
@@ -106,7 +111,7 @@ def _analyze_symbol_with_extended_hours(symbol, cfg, regime_label, sector_streng
 
     bars = _fetch_extended_bars(symbol, ZoneInfo(cfg.live_market_timezone))
     if not bars:
-        analysis.market_data.delayed_note = "After-hours alert evaluation skipped: extended-hours 5-minute bars unavailable."
+        analysis.market_data.delayed_note = "Extended-hours alert evaluation skipped: extended-hours 5-minute bars unavailable."
         analysis.market_data.session_state = "AFTER_HOURS"
         return analysis
 
