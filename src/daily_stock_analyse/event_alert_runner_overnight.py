@@ -13,13 +13,8 @@ MAX_DATA_AGE = timedelta(minutes=15)
 
 
 def _overnight_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Return current regular + post-market + overnight 5-minute bars.
-
-    The overnight window is 20:00-04:00 ET. If the upstream provider does not
-    expose fresh overnight bars, return an empty result rather than treating
-    the last regular/20:00 quote as current.
-    """
-    frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+    """Return fresh regular + pre-market + post-market + overnight 5-minute bars."""
+    frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
         return []
@@ -36,12 +31,13 @@ def _overnight_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | 
         return []
 
     anchor_date = latest.date()
-    if latest.time() < dt_time(9, 30):
+    if latest.time() < dt_time(4, 0):
         anchor_date -= timedelta(days=1)
 
     regular_and_evening = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
-    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= dt_time(4, 0))
-    df = df[regular_and_evening | overnight]
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time < dt_time(4, 0))
+    premarket = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time >= dt_time(4, 0)) & (df.index.time < dt_time(9, 30))
+    df = df[regular_and_evening | overnight | premarket]
     if df.empty:
         return []
 
@@ -64,12 +60,10 @@ def _patched_extended_hours_bars(symbol: str, market_tz: ZoneInfo):
 
 
 def run_event_alerts_overnight(base_path: Path | None = None) -> int:
-    # The existing runner owns scheduling, state, cooldowns, Telegram delivery,
-    # and event detection. This wrapper changes only the extended data source
-    # and keeps the implementation isolated from the regular-session engine.
     runner.os.environ["LIVE_EXTENDED_CLOSE"] = "04:00"
+    runner.os.environ.setdefault("EVENT_ALERT_PRE_MARKET_ENABLED", "1")
     runner._extended_hours_bars = _patched_extended_hours_bars
-    print("EVENT_ALERT_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
+    print("EVENT_ALERT_OVERNIGHT | enabled=True | pre_market=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
     return runner.run_event_alerts(base_path)
 
 
