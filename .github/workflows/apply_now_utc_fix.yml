@@ -1,0 +1,73 @@
+name: Apply now_utc live-alert fix
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply_now_utc_fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch live alert timestamp dependency
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/daily_stock_analyse/live_alerts.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_sig = '''def _build_live_setup_assessment(\n    analysis: StockAnalysis,\n    cfg: AppConfig,\n    phase: str,\n    min_setup_score: int,\n    session_policy: LiveSessionPolicy,\n    rvol_quality: str,\n    rr_ratio: float | None,\n) -> dict:\n'''
+          new_sig = '''def _build_live_setup_assessment(\n    analysis: StockAnalysis,\n    cfg: AppConfig,\n    phase: str,\n    min_setup_score: int,\n    session_policy: LiveSessionPolicy,\n    rvol_quality: str,\n    rr_ratio: float | None,\n    now_utc: datetime,\n) -> dict:\n'''
+
+          if old_sig not in text:
+              raise SystemExit("Expected _build_live_setup_assessment signature not found")
+          text = text.replace(old_sig, new_sig, 1)
+
+          old_call = '''        session_policy,\n        rvol_quality=rvol_quality,\n        rr_ratio=rr_ratio,\n    )\n'''
+          new_call = '''        session_policy,\n        rvol_quality=rvol_quality,\n        rr_ratio=rr_ratio,\n        now_utc=now_utc,\n    )\n'''
+
+          if old_call not in text:
+              raise SystemExit("Expected _build_live_setup_assessment call not found")
+          text = text.replace(old_call, new_call, 1)
+
+          path.write_text(text, encoding="utf-8")
+          print("Patched live_alerts.py: now_utc is now passed explicitly")
+          PY
+
+      - name: Add regression test
+        run: |
+          mkdir -p tests
+          cat > tests/test_live_alerts_now_utc.py <<'PY'
+          import inspect
+
+          from src.daily_stock_analyse.live_alerts import _build_live_setup_assessment
+
+          def test_live_setup_assessment_receives_now_utc():
+              assert "now_utc" in inspect.signature(_build_live_setup_assessment).parameters
+          PY
+
+      - name: Verify
+        run: |
+          python -m compileall -q src
+          python -m pytest -q tests/test_live_alerts_now_utc.py
+
+      - name: Commit fix to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/daily_stock_analyse/live_alerts.py tests/test_live_alerts_now_utc.py .github/workflows/apply_now_utc_fix.yml
+          git rm .github/workflows/apply_now_utc_fix.yml
+          git commit -m "fix: pass live alert evaluation timestamp explicitly" || exit 0
+          git push origin main
