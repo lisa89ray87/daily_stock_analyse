@@ -567,6 +567,7 @@ def _build_live_setup_assessment(
     session_policy: LiveSessionPolicy,
     rvol_quality: str,
     rr_ratio: float | None,
+    now_utc: datetime,
 ) -> dict:
     md = analysis.market_data
     signal = _intended_direction(analysis)
@@ -1202,6 +1203,7 @@ def _is_live_confirmable(analysis: StockAnalysis, cfg: AppConfig, opening_range_
         session_policy,
         rvol_quality=rvol_quality,
         rr_ratio=rr_ratio,
+        now_utc=now_utc,
     )
     thresholds.update(
         {
