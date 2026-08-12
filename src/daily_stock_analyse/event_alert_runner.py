@@ -4,9 +4,12 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import timedelta
+from datetime import UTC, datetime, time as dt_time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+import yfinance as yf
 
 from .config import load_config
 from .event_alerts import EventAlert, detect_event_alerts
@@ -27,6 +30,12 @@ def _int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _hhmm(name: str, default: str) -> dt_time:
+    raw = os.getenv(name, default).strip()
+    hour, minute = (int(part) for part in raw.split(":", 1))
+    return dt_time(hour=hour, minute=minute)
 
 
 def _startup(stage: str, status: str = "OK", **fields: object) -> None:
@@ -55,7 +64,7 @@ def _is_suppressed(state: dict, event: EventAlert, now, cooldown_minutes: int) -
     if not sent_at:
         return False
     try:
-        previous = __import__("datetime").datetime.fromisoformat(sent_at)
+        previous = datetime.fromisoformat(sent_at)
         return now - previous < timedelta(minutes=cooldown_minutes)
     except (TypeError, ValueError):
         return False
@@ -65,8 +74,9 @@ def _mark_sent(state: dict, event: EventAlert, now) -> None:
     state.setdefault("symbols", {}).setdefault(event.symbol, {})[event.key] = now.isoformat()
 
 
-def _message(events: list[EventAlert], market_time: str) -> str:
-    lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{market_time}</i>", ""]
+def _message(events: list[EventAlert], market_time: str, session_state: str) -> str:
+    session_label = "AFTER-HOURS" if session_state == "AFTER_HOURS" else "REGULAR"
+    lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{market_time} | {session_label}</i>", ""]
     for event in events:
         emoji = "🟢" if event.direction == "BULLISH" else "🔴" if event.direction == "BEARISH" else "🟡"
         price = f"${event.price:.2f}" if event.price is not None else "N/A"
@@ -81,17 +91,71 @@ def _message(events: list[EventAlert], market_time: str) -> str:
     return "\n".join(lines)
 
 
-def _evaluate_symbol(symbol: str, provider, cfg) -> tuple[str, list[EventAlert], str | None]:
+def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
+    """Fetch today's regular + post-market 5-minute bars for after-hours alerts."""
+    frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+    if frame.empty or not {"Open", "High", "Low", "Close", "Volume"}.issubset(frame.columns):
+        return []
+    df = frame.copy()
+    if df.index.tz is None:
+        df.index = df.index.tz_localize(UTC)
+    df.index = df.index.tz_convert(market_tz)
+    # Keep regular session + U.S. after-hours, deliberately excluding premarket.
+    df = df.between_time("09:30", "20:00")
+    if df.empty:
+        return []
+    session_date = df.index.max().date()
+    df = df[df.index.date == session_date].dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    out: list[dict[str, float | str]] = []
+    for ts, row in df.iterrows():
+        out.append({
+            "ts": ts.isoformat(),
+            "open": float(row["Open"]),
+            "high": float(row["High"]),
+            "low": float(row["Low"]),
+            "close": float(row["Close"]),
+            "volume": float(row["Volume"]),
+        })
+    return out
+
+
+def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[str, list[EventAlert], str | None]:
     """Fetch market data and detect events for one symbol in a worker thread."""
     print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=start", flush=True)
     try:
         print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_start", flush=True)
         md = provider.get_market_data(symbol)
         print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_complete", flush=True)
+
+        md.session_state = session_state
+        if session_state == "AFTER_HOURS" and _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
+            extended = _extended_hours_bars(symbol, ZoneInfo(cfg.live_market_timezone))
+            md.extended_intraday_bars = extended
+            if extended:
+                # Feed the detector the current regular + after-hours stream while
+                # keeping the regular VWAP/opening-range reference levels intact.
+                md.intraday_bars = extended
+                md.price = float(extended[-1]["close"])
+                md.after_hours_price = md.price
+                md.selected_price_session = "AFTER_HOURS"
+                md.latest_extended_price = md.price
+                md.latest_extended_session = "AFTER_HOURS"
+                md.extended_hours_used = True
+                md.is_extended_hours = True
+                print(
+                    f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_complete | bars={len(extended)}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_unavailable | status=DATA_LIMITED",
+                    flush=True,
+                )
+
         analysis = SimpleNamespace(symbol=symbol, market_data=md)
         events = detect_event_alerts(analysis, cfg)
         print(
-            f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)}",
+            f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=detection_complete | events={len(events)} | session={session_state}",
             flush=True,
         )
         return symbol, events, None
@@ -101,23 +165,21 @@ def _evaluate_symbol(symbol: str, provider, cfg) -> tuple[str, list[EventAlert],
         return symbol, [], error
 
 
-def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_workers: int) -> tuple[list[EventAlert], int, int]:
-    """Evaluate symbols concurrently with a bounded worker pool.
-
-    The worker pool only parallelizes market-data retrieval and event detection.
-    Cooldown filtering, Telegram delivery, and state writes remain serialized in
-    the main thread so alert behavior is unchanged.
-    """
+def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_workers: int, session_state: str) -> tuple[list[EventAlert], int, int]:
+    """Evaluate symbols concurrently with a bounded worker pool."""
     worker_count = min(max(1, max_workers), max(1, len(symbols)))
     print(
-        f"EVENT_ALERT_CONCURRENCY | stage=start | symbols={len(symbols)} | max_workers={worker_count}",
+        f"EVENT_ALERT_CONCURRENCY | stage=start | symbols={len(symbols)} | max_workers={worker_count} | session={session_state}",
         flush=True,
     )
 
     results: dict[str, list[EventAlert]] = {}
     errors = 0
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="event-alert") as executor:
-        futures = {executor.submit(_evaluate_symbol, symbol, provider, cfg): symbol for symbol in symbols}
+        futures = {
+            executor.submit(_evaluate_symbol, symbol, provider, cfg, session_state): symbol
+            for symbol in symbols
+        }
         for future in as_completed(futures):
             symbol = futures[future]
             try:
@@ -140,7 +202,7 @@ def _evaluate_symbols_concurrently(symbols: list[str], provider, cfg, max_worker
         pending_events.extend(events)
 
     print(
-        f"EVENT_ALERT_CONCURRENCY | stage=complete | detected={detected} | errors={errors}",
+        f"EVENT_ALERT_CONCURRENCY | stage=complete | detected={detected} | errors={errors} | session={session_state}",
         flush=True,
     )
     return pending_events, detected, errors
@@ -150,17 +212,16 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     repo_root = base_path or Path(__file__).resolve().parents[2]
     _startup("begin", repo_root=repo_root)
 
-    try:
-        cfg = load_config(repo_root)
-        _startup(
-            "config",
-            live_provider=cfg.live_data_provider,
-            timezone=cfg.live_market_timezone,
-            max_workers=cfg.event_alert_max_workers,
-        )
-    except Exception as exc:
-        _startup("config", "ERROR", error=repr(exc))
-        raise
+    cfg = load_config(repo_root)
+    extended_close = _hhmm("LIVE_EXTENDED_CLOSE", "20:00")
+    _startup(
+        "config",
+        live_provider=cfg.live_data_provider,
+        timezone=cfg.live_market_timezone,
+        max_workers=cfg.event_alert_max_workers,
+        after_hours_enabled=_flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True),
+        extended_close=extended_close.strftime("%H:%M"),
+    )
 
     if not _flag("EVENT_ALERT_ENABLED", True):
         print("EVENT_ALERT_ENABLED=0, exiting without event alerts.", flush=True)
@@ -170,30 +231,18 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     cooldown = max(0, _int("EVENT_ALERT_COOLDOWN_MINUTES", 15))
     state_path = repo_root / "artifacts" / "event_alert_state.json"
 
-    try:
-        state = _load_state(state_path)
-        _startup("state", path=state_path, symbols=len(state.get("symbols", {})))
-    except Exception as exc:
-        _startup("state", "ERROR", error=repr(exc))
-        raise
+    state = _load_state(state_path)
+    _startup("state", path=state_path, symbols=len(state.get("symbols", {})))
 
-    try:
-        telegram = TelegramBotProvider(
-            enabled=cfg.telegram_enabled,
-            bot_token=cfg.telegram_bot_token,
-            chat_id=cfg.telegram_chat_id,
-        )
-        _startup("telegram", configured=telegram.is_configured)
-    except Exception as exc:
-        _startup("telegram", "ERROR", error=repr(exc))
-        raise
+    telegram = TelegramBotProvider(
+        enabled=cfg.telegram_enabled,
+        bot_token=cfg.telegram_bot_token,
+        chat_id=cfg.telegram_chat_id,
+    )
+    _startup("telegram", configured=telegram.is_configured)
 
-    try:
-        provider = create_market_data_provider(cfg.live_data_provider)
-        _startup("market_provider", provider=cfg.live_data_provider)
-    except Exception as exc:
-        _startup("market_provider", "ERROR", error=repr(exc))
-        raise
+    provider = create_market_data_provider(cfg.live_data_provider)
+    _startup("market_provider", provider=cfg.live_data_provider)
 
     symbols = list(dict.fromkeys(cfg.fixed_watchlist + cfg.candidate_universe))
     _startup("symbols", count=len(symbols), symbols=",".join(symbols))
@@ -204,6 +253,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     print(f"Event cooldown: {cooldown} minutes", flush=True)
     print(f"Symbols: {len(symbols)}", flush=True)
     print(f"Max concurrent workers: {cfg.event_alert_max_workers}", flush=True)
+    print(f"After-hours alerts: {'enabled' if _flag('EVENT_ALERT_AFTER_HOURS_ENABLED', True) else 'disabled'} through {extended_close.strftime('%H:%M')} ET", flush=True)
     _startup("ready")
 
     cycle = 0
@@ -227,11 +277,17 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         )
 
         if session.session_state == "AFTER_HOURS":
-            print("EVENT_ALERT_EVALUATION | regular-session window ended; event alert service stopped cleanly", flush=True)
-            return 0
-
-        if session.session_state != "US_REGULAR":
-            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR session", flush=True)
+            if not _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
+                print("EVENT_ALERT_EVALUATION | after-hours alerts disabled by configuration", flush=True)
+                return 0
+            if session.market_now.time() >= extended_close:
+                print(
+                    f"EVENT_ALERT_EVALUATION | extended-hours window ended at {extended_close.strftime('%H:%M')} ET; stopped cleanly",
+                    flush=True,
+                )
+                return 0
+        elif session.session_state != "US_REGULAR":
+            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR or AFTER_HOURS session", flush=True)
             time.sleep(interval * 60)
             continue
 
@@ -240,6 +296,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             provider,
             cfg,
             cfg.event_alert_max_workers,
+            session.session_state,
         )
 
         pending: list[EventAlert] = []
@@ -253,16 +310,16 @@ def run_event_alerts(base_path: Path | None = None) -> int:
         print(
             f"EVENT_ALERT_DIAGNOSTIC | detected={detected} | "
             f"pending={len(pending)} | cooldown_suppressed={suppressed} | "
-            f"symbol_errors={errors} | telegram_configured={telegram.is_configured}",
+            f"symbol_errors={errors} | telegram_configured={telegram.is_configured} | session={session.session_state}",
             flush=True,
         )
 
         if pending:
-            message = _message(pending, session.market_now.isoformat())
+            message = _message(pending, session.market_now.isoformat(), session.session_state)
             result = telegram.send_message(message)
             print(
                 f"EVENT_ALERT_TELEGRAM | attempted=True | success={result.success} | "
-                f"status_code={result.status_code} | error={result.error or 'NONE'}",
+                f"status_code={result.status_code} | error={result.error or 'NONE'} | session={session.session_state}",
                 flush=True,
             )
             if result.success:
