@@ -80,6 +80,12 @@ def _event_explanation(event: EventAlert) -> str:
     """Return a deterministic, beginner-friendly explanation without giving a trade instruction."""
     event_type = str(event.event_type).upper()
     detail = str(event.detail).lower()
+    if event_type == "PRICE_CHANGE":
+        if "+" in detail or "rose" in detail or "gained" in detail:
+            return "Price moved sharply higher over a short period, showing stronger-than-usual upside momentum for this session."
+        if "-" in detail or "fell" in detail or "dropped" in detail:
+            return "Price moved sharply lower over a short period, showing stronger-than-usual downside momentum for this session."
+        return "Price changed quickly over a short period, which signals unusually strong short-term movement."
     if event_type == "PRICE_CROSS":
         if "opening_range_high" in detail or "opening range high" in detail:
             if "above" in detail:
@@ -110,6 +116,12 @@ def _event_explanation(event: EventAlert) -> str:
         if "above 70" in detail or ("above" in detail and "70" in detail):
             return "RSI has entered overbought territory, meaning recent buying has been unusually strong; it does not by itself mean price must fall."
         return "RSI crossed a threshold, indicating a notable change in recent price momentum."
+    if event_type == "MACD_CROSS":
+        if "bullish" in detail:
+            return "MACD moved above its signal line, which can reflect strengthening short-term upward momentum."
+        if "bearish" in detail:
+            return "MACD moved below its signal line, which can reflect strengthening short-term downward momentum."
+        return "MACD crossed its signal line, indicating a potential shift in short-term momentum."
     if event_type == "VOLUME_SPIKE":
         return "Trading volume is unusually high compared with normal activity, so the price move has stronger participation than usual."
     return "A notable market condition was detected; review the event details before drawing any trading conclusion."
