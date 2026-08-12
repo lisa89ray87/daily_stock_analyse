@@ -75,7 +75,10 @@ def _mark_sent(state: dict, event: EventAlert, now) -> None:
 
 
 def _message(events: list[EventAlert], market_time: str, session_state: str) -> str:
-    session_label = "AFTER-HOURS" if session_state == "AFTER_HOURS" else "REGULAR"
+    if session_state == "AFTER_HOURS":
+        session_label = "EXTENDED / OVERNIGHT"
+    else:
+        session_label = "REGULAR"
     lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{market_time} | {session_label}</i>", ""]
     for event in events:
         emoji = "🟢" if event.direction == "BULLISH" else "🔴" if event.direction == "BEARISH" else "🟡"
@@ -92,20 +95,31 @@ def _message(events: list[EventAlert], market_time: str, session_state: str) -> 
 
 
 def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Fetch today's regular + post-market 5-minute bars for after-hours alerts."""
+    """Fetch the current regular + extended session 5-minute bars, including overnight when the provider exposes them."""
     frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
-    if frame.empty or not {"Open", "High", "Low", "Close", "Volume"}.issubset(frame.columns):
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if frame.empty or not required.issubset(frame.columns):
         return []
     df = frame.copy()
     if df.index.tz is None:
         df.index = df.index.tz_localize(UTC)
     df.index = df.index.tz_convert(market_tz)
-    # Keep regular session + U.S. after-hours, deliberately excluding premarket.
-    df = df.between_time("09:30", "20:00")
+
+    # Keep the regular session plus post-market and overnight (through 04:00 ET).
+    # At 00:00-04:00 the overnight bars belong to the prior U.S. trading date.
+    overnight_close = dt_time(4, 0)
+    current_latest = df.index.max()
+    anchor_date = current_latest.date()
+    if current_latest.time() < dt_time(9, 30):
+        from datetime import timedelta as _timedelta
+        anchor_date = anchor_date - _timedelta(days=1)
+
+    regular_or_evening = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
+    overnight = (df.index.date == anchor_date + _timedelta(days=1)) & (df.index.time <= overnight_close)
+    df = df[regular_or_evening | overnight]
     if df.empty:
         return []
-    session_date = df.index.max().date()
-    df = df[df.index.date == session_date].dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
     out: list[dict[str, float | str]] = []
     for ts, row in df.iterrows():
         out.append({
@@ -132,8 +146,6 @@ def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[st
             extended = _extended_hours_bars(symbol, ZoneInfo(cfg.live_market_timezone))
             md.extended_intraday_bars = extended
             if extended:
-                # Feed the detector the current regular + after-hours stream while
-                # keeping the regular VWAP/opening-range reference levels intact.
                 md.intraday_bars = extended
                 md.price = float(extended[-1]["close"])
                 md.after_hours_price = md.price
@@ -213,7 +225,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     _startup("begin", repo_root=repo_root)
 
     cfg = load_config(repo_root)
-    extended_close = _hhmm("LIVE_EXTENDED_CLOSE", "20:00")
+    extended_close = _hhmm("LIVE_EXTENDED_CLOSE", "04:00")
     _startup(
         "config",
         live_provider=cfg.live_data_provider,
@@ -253,7 +265,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     print(f"Event cooldown: {cooldown} minutes", flush=True)
     print(f"Symbols: {len(symbols)}", flush=True)
     print(f"Max concurrent workers: {cfg.event_alert_max_workers}", flush=True)
-    print(f"After-hours alerts: {'enabled' if _flag('EVENT_ALERT_AFTER_HOURS_ENABLED', True) else 'disabled'} through {extended_close.strftime('%H:%M')} ET", flush=True)
+    print(f"Extended-hours alerts: {'enabled' if _flag('EVENT_ALERT_AFTER_HOURS_ENABLED', True) else 'disabled'} through {extended_close.strftime('%H:%M')} ET", flush=True)
     _startup("ready")
 
     cycle = 0
@@ -278,7 +290,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
 
         if session.session_state == "AFTER_HOURS":
             if not _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
-                print("EVENT_ALERT_EVALUATION | after-hours alerts disabled by configuration", flush=True)
+                print("EVENT_ALERT_EVALUATION | extended-hours alerts disabled by configuration", flush=True)
                 return 0
             if session.market_now.time() >= extended_close:
                 print(
