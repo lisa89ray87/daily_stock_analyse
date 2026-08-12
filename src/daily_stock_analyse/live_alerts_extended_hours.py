@@ -14,6 +14,7 @@ from .session_windows import is_time_in_window
 
 _ORIGINAL_POLICY = engine._live_session_policy
 _ORIGINAL_ANALYZER = engine._analyze_symbol
+_ORIGINAL_CONTEXT = engine._compute_intraday_context
 
 
 def _flag(name: str, default: bool = True) -> bool:
@@ -95,8 +96,6 @@ def _after_hours_policy(now_utc: datetime, cfg):
 
     return engine.LiveSessionPolicy(
         session_state="AFTER_HOURS",
-        # Keep the normal trigger framework available, but explicitly disable
-        # regular-session-only Opening Range confirmation.
         allows_regular_session_triggers=True,
         allows_opening_range_confirmation=False,
         allows_vwap_confirmation=True,
@@ -104,6 +103,17 @@ def _after_hours_policy(now_utc: datetime, cfg):
         allows_regular_session_candle_confirmation=True,
         reason="Extended-hours trigger engine enabled using fresh extended-hours price/candle data",
     )
+
+
+def _context_with_extended_hours(symbol_analysis, cfg):
+    context = _ORIGINAL_CONTEXT(symbol_analysis, cfg)
+    if getattr(symbol_analysis.market_data, "session_state", None) == "AFTER_HOURS":
+        # The regular-session opening range must never become an overnight
+        # trigger reference. Keep the full bar history for EMA/momentum/VWAP,
+        # but remove OR levels from the extended-hours decision context.
+        context["or_high"] = None
+        context["or_low"] = None
+    return context
 
 
 def _analyze_symbol_with_extended_hours(symbol, cfg, regime_label, sector_strength, market_provider, news_provider, *, now_utc):
@@ -155,14 +165,18 @@ def run_live_alerts_extended_hours(base_path=None) -> int:
 
     original_policy = engine._live_session_policy
     original_analyzer = engine._analyze_symbol
+    original_context = engine._compute_intraday_context
     engine._live_session_policy = _after_hours_policy
     engine._analyze_symbol = _analyze_symbol_with_extended_hours
+    engine._compute_intraday_context = _context_with_extended_hours
     try:
         print(f"LIVE_AFTER_HOURS | enabled=True | extended_close={_extended_close().strftime('%H:%M')} ET")
+        print("LIVE_AFTER_HOURS | strategy=EXTENDED_HOURS | opening_range_trigger=disabled | vwap=enabled | overnight_bars=enabled")
         return engine.run_live_alerts(base_path)
     finally:
         engine._live_session_policy = original_policy
         engine._analyze_symbol = original_analyzer
+        engine._compute_intraday_context = original_context
 
 
 if __name__ == "__main__":
