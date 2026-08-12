@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -90,6 +91,21 @@ def _is_nyse_holiday(day: date) -> bool:
     return len(holidays) > 0
 
 
+def _is_overnight_window(now_market: datetime, regular_close: time, extended_close: time) -> bool:
+    """Return True for the post-close window, including across midnight.
+
+    The production overnight policy is 16:00-04:00 ET: regular-session close
+    through the configured extended close. This must be checked before the
+    normal ``now < open`` pre-market classification because 00:00-04:00 is
+    chronologically before the same day's 09:30 open but belongs to the prior
+    trading day's overnight session.
+    """
+    current = now_market.time()
+    if regular_close < extended_close:
+        return regular_close <= current < extended_close
+    return current >= regular_close or current < extended_close
+
+
 def get_market_session_status(
     now_utc: datetime,
     market_timezone: str,
@@ -134,9 +150,13 @@ def get_market_session_status(
 
     is_open = open_market <= now_market < close_market
     opening_range = is_open and now_market < (open_market + timedelta(minutes=30))
+    extended_close = _parse_hhmm(os.getenv("LIVE_EXTENDED_CLOSE", "04:00"))
+    overnight = not is_open and _is_overnight_window(now_market, close_market.time(), extended_close)
 
     if is_open:
         session_state = "US_REGULAR"
+    elif overnight:
+        session_state = "AFTER_HOURS"
     elif now_market < open_market:
         session_state = "PRE_MARKET"
     elif now_market >= close_market:
@@ -145,6 +165,8 @@ def get_market_session_status(
         session_state = "CLOSED"
 
     reason = "Market open" if is_open else "Outside regular market hours"
+    if overnight:
+        reason = f"Extended-hours / overnight window through {extended_close.strftime('%H:%M')} ET"
     if calendar_open_utc is None or calendar_close_utc is None:
         reason = f"{reason} (calendar fallback mode)"
 
@@ -180,121 +202,6 @@ def apply_session_aware_market_data(
     market_data.live_data_required = selection.live_data_required
     market_data.live_regular_session = selection.live_regular_session
     market_data.extended_hours_used = selection.extended_hours_used
-    market_data.price = selection.selected_price
-
-    if selection.live_regular_session and selection.selected_price is None:
-        market_data.delayed_note = "Live regular-session price unavailable from provider."
-    elif selection.extended_hours_used:
-        market_data.delayed_note = "Latest price reflects extended-hours provider data, not U.S. regular-session live trading."
-    elif not selection.live_regular_session and selection.selected_price is None:
-        market_data.delayed_note = "Extended-hours price unavailable; do not treat prior regular-session data as live."
-
+    if selection.selected_price is not None:
+        market_data.price = selection.selected_price
     return selection
-
-
-def select_market_data_for_session(market_data, session: MarketSessionStatus) -> SessionAwareDataSelection:
-    if session.session_state == "US_REGULAR":
-        live_price = _live_intraday_price(market_data)
-        return SessionAwareDataSelection(
-            session_state=session.session_state,
-            selected_data_source=LIVE_INTRADAY_SOURCE if live_price is not None else UNAVAILABLE_SOURCE,
-            selected_price=live_price,
-            selected_price_session="REGULAR" if live_price is not None else "UNKNOWN",
-            live_data_required=True,
-            live_regular_session=True,
-            extended_hours_used=False,
-        )
-
-    extended_price, extended_session = _extended_hours_price(market_data)
-    if extended_price is not None:
-        source = EXTENDED_HOURS_SOURCE
-        if extended_session == "PREMARKET":
-            source = PREMARKET_SOURCE
-        elif extended_session == "AFTER_HOURS":
-            source = AFTER_HOURS_SOURCE
-        return SessionAwareDataSelection(
-            session_state=session.session_state,
-            selected_data_source=source,
-            selected_price=extended_price,
-            selected_price_session=extended_session,
-            live_data_required=False,
-            live_regular_session=False,
-            extended_hours_used=True,
-        )
-
-    fallback_price, fallback_session = _latest_valid_quote(market_data)
-    return SessionAwareDataSelection(
-        session_state=session.session_state,
-        selected_data_source=LATEST_AVAILABLE_SOURCE if fallback_price is not None else UNAVAILABLE_SOURCE,
-        selected_price=fallback_price,
-        selected_price_session=fallback_session,
-        live_data_required=False,
-        live_regular_session=False,
-        extended_hours_used=False,
-    )
-
-
-def _live_intraday_price(market_data) -> float | None:
-    if market_data.intraday_bars or market_data.intraday_timestamp or market_data.vwap is not None:
-        return market_data.regular_price if market_data.regular_price is not None else market_data.price
-    return None
-
-
-def _extended_hours_price(market_data) -> tuple[float | None, str]:
-    if market_data.premarket_price is not None:
-        return market_data.premarket_price, "PREMARKET"
-    if market_data.after_hours_price is not None:
-        return market_data.after_hours_price, "AFTER_HOURS"
-    if market_data.latest_extended_price is not None and market_data.latest_extended_session in {"PREMARKET", "AFTER_HOURS"}:
-        return market_data.latest_extended_price, market_data.latest_extended_session
-    return None, "UNKNOWN"
-
-
-def _latest_valid_quote(market_data) -> tuple[float | None, str]:
-    if market_data.regular_price is not None:
-        return market_data.regular_price, "REGULAR"
-    if market_data.price is not None:
-        return market_data.price, market_data.selected_price_session or "REGULAR"
-    if market_data.latest_extended_price is not None:
-        return market_data.latest_extended_price, market_data.latest_extended_session
-    return None, "UNKNOWN"
-
-
-def next_us_market_open_malaysia(
-    now_utc: datetime,
-    market_timezone: str,
-    market_open_hhmm: str,
-    malaysia_timezone: str,
-) -> datetime:
-    market_tz = ZoneInfo(_safe_tz_name(market_timezone, "America/New_York"))
-    my_tz = ZoneInfo(malaysia_timezone)
-    open_t = _parse_hhmm(market_open_hhmm)
-
-    current_market = now_utc.astimezone(market_tz)
-
-    # Search next 10 days to safely skip weekends/holidays.
-    for i in range(0, 10):
-        day = current_market.date() + timedelta(days=i)
-        if day.weekday() >= 5:
-            continue
-
-        calendar_open_utc, _ = _calendar_schedule_for_day(day)
-        if calendar_open_utc is not None:
-            open_market = calendar_open_utc.astimezone(market_tz)
-        else:
-            open_market = datetime.combine(day, open_t, tzinfo=market_tz)
-
-        if open_market <= current_market and i == 0:
-            continue
-
-        return open_market.astimezone(my_tz)
-
-    # Defensive fallback.
-    fallback = current_market + timedelta(days=1)
-    while fallback.weekday() >= 5:
-        fallback += timedelta(days=1)
-    return datetime.combine(fallback.date(), open_t, tzinfo=market_tz).astimezone(my_tz)
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
