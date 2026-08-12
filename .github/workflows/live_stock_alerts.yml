@@ -102,7 +102,7 @@ jobs:
           TELEGRAM_ENABLED: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m src.daily_stock_analyse.live_alerts_extended_hours
+        run: python -m src.daily_stock_analyse.live_alerts_overnight
 
       - name: Save alert state
         if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true') }}
