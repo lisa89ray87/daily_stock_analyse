@@ -76,6 +76,37 @@ def _mark_sent(state: dict, event: EventAlert, now) -> None:
     state.setdefault("symbols", {}).setdefault(event.symbol, {})[event.key] = now.isoformat()
 
 
+def _event_explanation(event: EventAlert) -> str:
+    """Return a deterministic, beginner-friendly explanation without giving a trade instruction."""
+    event_type = str(event.event_type).upper()
+    detail = str(event.detail).lower()
+    if event_type == "PRICE_CROSS":
+        if "opening_range_high" in detail or "opening range high" in detail:
+            return "Price moved above the early-session high, which can indicate increasing short-term buying strength."
+        if "opening_range_low" in detail or "opening range low" in detail:
+            return "Price moved below the early-session low, which can indicate increasing short-term selling pressure."
+        if "vwap" in detail and "above" in detail:
+            return "Price moved above VWAP, indicating stronger intraday positioning relative to the session's average traded price."
+        if "vwap" in detail and "below" in detail:
+            return "Price moved below VWAP, indicating weaker intraday positioning relative to the session's average traded price."
+        return "Price crossed an important intraday reference level, so short-term momentum may be changing."
+    if event_type == "MA_CROSS":
+        if "below" in detail:
+            return "Price moved below the moving average, suggesting short-term momentum is weakening."
+        if "above" in detail:
+            return "Price moved above the moving average, suggesting short-term momentum is strengthening."
+        return "Price crossed a moving average, indicating a possible change in short-term momentum."
+    if event_type == "RSI_THRESHOLD":
+        if "below 30" in detail or "below" in detail and "30" in detail:
+            return "RSI has entered oversold territory, meaning recent selling has been unusually strong; it does not by itself mean price must rebound."
+        if "above 70" in detail or "above" in detail and "70" in detail:
+            return "RSI has entered overbought territory, meaning recent buying has been unusually strong; it does not by itself mean price must fall."
+        return "RSI crossed a threshold, indicating a notable change in recent price momentum."
+    if event_type == "VOLUME_SPIKE":
+        return "Trading volume is unusually high compared with normal activity, so the price move has stronger participation than usual."
+    return "A notable market condition was detected; review the event details before drawing any trading conclusion."
+
+
 def _message(events: list[EventAlert], market_time: str, session_state: str, batch_number: int = 1, batch_count: int = 1) -> str:
     if session_state == "US_REGULAR":
         session_label = "REGULAR"
@@ -93,6 +124,7 @@ def _message(events: list[EventAlert], market_time: str, session_state: str, bat
             f"Price: {price}",
             html.escape(str(event.detail)),
             f"Severity: {html.escape(event.severity)}",
+            f"💡 <b>What this means:</b> {html.escape(_event_explanation(event))}",
             "",
         ])
     lines.append("<i>Early warning only — not a confirmed trade entry.</i>")
