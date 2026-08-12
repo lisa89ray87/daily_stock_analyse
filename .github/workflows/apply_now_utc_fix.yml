@@ -30,20 +30,17 @@ jobs:
 
           old_sig = '''def _build_live_setup_assessment(\n    analysis: StockAnalysis,\n    cfg: AppConfig,\n    phase: str,\n    min_setup_score: int,\n    session_policy: LiveSessionPolicy,\n    rvol_quality: str,\n    rr_ratio: float | None,\n) -> dict:\n'''
           new_sig = '''def _build_live_setup_assessment(\n    analysis: StockAnalysis,\n    cfg: AppConfig,\n    phase: str,\n    min_setup_score: int,\n    session_policy: LiveSessionPolicy,\n    rvol_quality: str,\n    rr_ratio: float | None,\n    now_utc: datetime,\n) -> dict:\n'''
-
           if old_sig not in text:
               raise SystemExit("Expected _build_live_setup_assessment signature not found")
           text = text.replace(old_sig, new_sig, 1)
 
           old_call = '''        session_policy,\n        rvol_quality=rvol_quality,\n        rr_ratio=rr_ratio,\n    )\n'''
           new_call = '''        session_policy,\n        rvol_quality=rvol_quality,\n        rr_ratio=rr_ratio,\n        now_utc=now_utc,\n    )\n'''
-
           if old_call not in text:
               raise SystemExit("Expected _build_live_setup_assessment call not found")
           text = text.replace(old_call, new_call, 1)
 
           path.write_text(text, encoding="utf-8")
-          print("Patched live_alerts.py: now_utc is now passed explicitly")
           PY
 
       - name: Add regression test
@@ -51,14 +48,14 @@ jobs:
           mkdir -p tests
           cat > tests/test_live_alerts_now_utc.py <<'PY'
           import inspect
-          from src.daily_stock_analyse.live_alerts import _build_live_setup_assessment
+          from daily_stock_analyse.live_alerts import _build_live_setup_assessment
           assert "now_utc" in inspect.signature(_build_live_setup_assessment).parameters
           PY
 
       - name: Verify
         run: |
           python -m compileall -q src
-          python tests/test_live_alerts_now_utc.py
+          PYTHONPATH=src python tests/test_live_alerts_now_utc.py
 
       - name: Commit fix to main
         run: |
@@ -69,4 +66,4 @@ jobs:
           git commit -m "fix: pass live alert evaluation timestamp explicitly"
           git push origin main
 
-# trigger retry
+# trigger final
