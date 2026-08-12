@@ -59,13 +59,30 @@ def _normalize_trade_direction(message: str) -> str:
     return message[:header.start()] + replacement + message[header.end():]
 
 
-def _label_live_stock_alert(message: str) -> str:
-    """Clearly identify and compactly format Live Stock Alert messages.
+def _trade_alert_explanation(message: str) -> str | None:
+    """Return a deterministic beginner explanation for a confirmed trigger."""
+    match = re.search(r"Trigger:\s*([^\n]+)", message)
+    if not match:
+        return None
+    trigger = match.group(1).strip().lower()
+    explanations = (
+        ("bullish continuation retest", "Price pulled back toward a short-term trend level and then showed signs of continuing upward."),
+        ("bearish continuation retest", "Price retested a short-term trend level and then showed signs of continuing downward."),
+        ("opening-range breakout", "Price moved above the early-session range high, showing a confirmed upward breakout."),
+        ("opening-range breakdown", "Price moved below the early-session range low, showing a confirmed downward breakdown."),
+        ("vwap reclaim and hold", "Price reclaimed VWAP and held above it, showing stronger intraday positioning."),
+        ("vwap rejection and hold", "Price was rejected near VWAP and held below it, showing weaker intraday positioning."),
+        ("breakout above resistance", "Price moved through a resistance level, indicating that buyers overcame that reference level."),
+        ("breakdown below support", "Price moved through a support level, indicating that sellers overcame that reference level."),
+    )
+    for phrase, explanation in explanations:
+        if phrase in trigger:
+            return explanation
+    return "The live engine detected a confirmed price-action condition that matched the setup rules."
 
-    Live Event messages already carry their own LIVE EVENT WARNING header.
-    Only the known Live Stock Alert message families are transformed here, so
-    Telegram connectivity tests and unrelated provider messages are untouched.
-    """
+
+def _label_live_stock_alert(message: str) -> str:
+    """Clearly identify and compactly format Live Stock Alert messages."""
     if "LIVE EVENT WARNING" in message or "LIVE STOCK ALERT" in message:
         return message
 
@@ -78,7 +95,6 @@ def _label_live_stock_alert(message: str) -> str:
     if not any(marker in message for marker in stock_alert_markers):
         return message
 
-    # Keep the validated trade data unchanged; only improve mobile presentation.
     if "ENTRY TRIGGERED" in message:
         message = message.replace("Target 2: Unavailable", "Target 2: —")
         message = message.replace("Target 2: UNAVAILABLE", "Target 2: —")
@@ -86,14 +102,9 @@ def _label_live_stock_alert(message: str) -> str:
         message = message.replace("VWAP: UNAVAILABLE", "VWAP: —")
         message = message.replace("Opening Range: UNAVAILABLE", "Opening Range: —")
         message = message.replace("Market: Unavailable", "Market: —")
-
-        # Make countertrend alerts immediately visible to a beginner while
-        # preserving the original market-alignment value and all trade data.
         message = message.replace("Market: MARKET_COUNTERTREND", "Market: ⚠️ COUNTERTREND")
         message = message.replace("Market: MARKET_ALIGNED", "Market: ✅ ALIGNED")
 
-        # Group the decision-critical fields into a compact mobile block while
-        # preserving every value produced by the live-alert engine.
         lines = message.splitlines()
         header_index = next((i for i, line in enumerate(lines) if "ENTRY TRIGGERED" in line), None)
         if header_index is not None:
@@ -101,7 +112,14 @@ def _label_live_stock_alert(message: str) -> str:
             body = [line for line in lines[header_index + 1:] if line.strip()]
             labels = {"Phase:", "Price:", "Setup Score:", "RVOL:", "VWAP:", "Trigger:", "Risk/Reward:", "Opening Range:", "Market:", "Entry:", "Stop:", "Target 1:", "Target 2:", "Time:"}
             filtered = [line for line in body if any(line.startswith(label) for label in labels)]
-            # Ensure the alert title is visually separated from the trade data.
+            explanation = _trade_alert_explanation(message)
+            if explanation:
+                trigger_index = next((i for i, line in enumerate(filtered) if line.startswith("Trigger:")), None)
+                explanation_line = f"💡 <b>What this means:</b> {explanation}"
+                if trigger_index is not None:
+                    filtered.insert(trigger_index + 1, explanation_line)
+                else:
+                    filtered.insert(0, explanation_line)
             return "<b>🟢 LIVE STOCK ALERT</b>\n\n" + header + "\n\n" + "\n".join(filtered)
 
     return "<b>🟢 LIVE STOCK ALERT</b>\n\n" + message
