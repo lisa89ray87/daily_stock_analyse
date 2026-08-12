@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     # Keep the schedule in New York time so DST is handled by GitHub.
-    - cron: "30 9 * * 1-5"
+    # Use non-round-hour minutes to reduce the chance of GitHub schedule congestion.
+    - cron: "35 9 * * 1-5"
       timezone: "America/New_York"
-    - cron: "0 16 * * 1-5"
+    - cron: "5 16 * * 1-5"
       timezone: "America/New_York"
 
 # Do not let a delayed/manual run cancel the other scheduled report window.
@@ -43,8 +44,8 @@ jobs:
           schedule = os.environ.get("SCHEDULE", "")
           event_name = os.environ.get("EVENT_NAME", "")
           scheduled_windows = {
-              "30 9 * * 1-5": "US_MARKET_OPEN",
-              "0 16 * * 1-5": "US_MARKET_CLOSE",
+              "35 9 * * 1-5": "US_MARKET_OPEN",
+              "5 16 * * 1-5": "US_MARKET_CLOSE",
           }
 
           if event_name == "workflow_dispatch":
