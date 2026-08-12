@@ -11,6 +11,10 @@ from .market_hours import get_market_session_status
 from .models import MarketData
 
 
+_ORIGINAL_POLICY = engine._live_session_policy
+_ORIGINAL_ANALYZER = engine._analyze_symbol
+
+
 def _flag(name: str, default: bool = True) -> bool:
     raw = os.getenv(name)
     if raw is None:
@@ -51,7 +55,7 @@ def _fetch_extended_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
 
 
 def _after_hours_policy(now_utc: datetime, cfg):
-    base = engine._live_session_policy(now_utc, cfg)
+    base = _ORIGINAL_POLICY(now_utc, cfg)
     session = get_market_session_status(
         now_utc,
         market_timezone=cfg.live_market_timezone,
@@ -82,7 +86,7 @@ def _after_hours_policy(now_utc: datetime, cfg):
 
 
 def _analyze_symbol_with_extended_hours(symbol, cfg, regime_label, sector_strength, market_provider, news_provider, *, now_utc):
-    analysis = engine._analyze_symbol(
+    analysis = _ORIGINAL_ANALYZER(
         symbol,
         cfg,
         regime_label,
