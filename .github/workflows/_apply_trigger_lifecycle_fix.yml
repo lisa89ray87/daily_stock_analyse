@@ -2,69 +2,66 @@ name: Apply trigger lifecycle fix
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: ${{ !contains(github.event.head_commit.message, 'fix: prevent fresh trigger self-expiry') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Patch trigger lifecycle
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from pathlib import Path
           p = Path('src/daily_stock_analyse/live_alerts.py')
           s = p.read_text(encoding='utf-8')
           old = s
-
-          s = s.replace(
-              '    timestamp: str | None\n    detail: str\n',
-              '    timestamp: str | None\n    observed_at: str | None\n    detail: str\n',
-              1,
-          )
-          s = s.replace(
-              '    timestamp: str | None,\n    detail: str,\n) -> TriggerEvidence:',
-              '    timestamp: str | None,\n    observed_at: str | None,\n    detail: str,\n) -> TriggerEvidence:',
-              1,
-          )
-          s = s.replace(
-              '            timestamp=timestamp,\n            detail=detail,\n',
-              '            timestamp=timestamp,\n            observed_at=observed_at,\n            detail=detail,\n',
-              1,
-          )
-          s = s.replace(
-              '        timestamp=timestamp,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
-              '        timestamp=timestamp,\n        observed_at=observed_at,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
-              1,
-          )
-          s = s.replace(
-              '        timestamp=trigger_ts,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
-              '        timestamp=trigger_ts,\n        observed_at=now_utc.isoformat() if price_confirmed else None,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
-              1,
-          )
-          s = s.replace(
-              '    evidence_ts = _parse_ts(evidence.timestamp)\n    if evidence_ts is None:\n        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")\n\n    if now_utc - evidence_ts > timedelta(minutes=max(1, cfg.v4_max_trigger_age_minutes)):\n',
-              '    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)\n    if evidence_ts is None:\n        return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")\n\n    if now_utc - evidence_ts > timedelta(minutes=max(1, cfg.v4_max_trigger_age_minutes)):\n',
-              1,
-          )
-
+          replacements = [
+              (
+                  '    timestamp: str | None\n    detail: str\n',
+                  '    timestamp: str | None\n    observed_at: str | None\n    detail: str\n',
+              ),
+              (
+                  '    timestamp: str | None,\n    detail: str,\n) -> TriggerEvidence:',
+                  '    timestamp: str | None,\n    observed_at: str | None,\n    detail: str,\n) -> TriggerEvidence:',
+              ),
+              (
+                  '            timestamp=timestamp,\n            detail=detail,\n',
+                  '            timestamp=timestamp,\n            observed_at=observed_at,\n            detail=detail,\n',
+              ),
+              (
+                  '        timestamp=timestamp,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
+                  '        timestamp=timestamp,\n        observed_at=observed_at,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
+              ),
+              (
+                  '        timestamp=trigger_ts,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
+                  '        timestamp=trigger_ts,\n        observed_at=now_utc.isoformat() if price_confirmed else None,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
+              ),
+              (
+                  '    evidence_ts = _parse_ts(evidence.timestamp)\n',
+                  '    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)\n',
+              ),
+          ]
+          for before, after in replacements:
+              if before not in s:
+                  raise SystemExit(f'Expected pattern not found: {before!r}')
+              s = s.replace(before, after, 1)
           if s == old:
-              raise SystemExit('No changes made; expected trigger lifecycle patterns were not found')
-          if 'observed_at: str | None' not in s:
-              raise SystemExit('TriggerEvidence observed_at field was not added')
-          if 'evidence.observed_at or evidence.timestamp' not in s:
-              raise SystemExit('Lifecycle age source was not changed')
+              raise SystemExit('No changes made')
           p.write_text(s, encoding='utf-8')
+          PY
 
       - name: Targeted regression check
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           from datetime import UTC, datetime, timedelta
           from types import SimpleNamespace
           from src.daily_stock_analyse.live_alerts import TriggerEvidence, _evaluate_trigger_lifecycle
@@ -85,6 +82,8 @@ jobs:
           cfg = SimpleNamespace(v4_max_trigger_age_minutes=10)
           result = _evaluate_trigger_lifecycle(evidence, analysis, cfg, now)
           assert result.state == 'TRIGGER_STILL_VALID', result
+          print('Targeted trigger lifecycle regression check: PASS')
+          PY
 
       - name: Commit patch and remove temporary workflow
         shell: bash
