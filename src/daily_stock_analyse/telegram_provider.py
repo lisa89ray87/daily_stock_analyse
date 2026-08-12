@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import re
 
 import requests
 
@@ -18,6 +19,44 @@ class TelegramProvider(ABC):
     @abstractmethod
     def send_message(self, message: str, parse_mode: str = "HTML") -> TelegramSendResult:
         raise NotImplementedError
+
+
+def _normalize_trade_direction(message: str) -> str:
+    """Correct a contradictory LONG/SHORT Telegram header from validated levels.
+
+    The live engine already validates trade geometry before an alert is eligible.
+    This final transport guard prevents a stale/inconsistent signal label from
+    producing a Telegram message that contradicts Entry/Stop/Target1.
+    """
+    header = re.search(r"(<b>[🟢🔴]\s+)([^\n<]+?)\s+(LONG|SHORT)(\s+-\s+ENTRY TRIGGERED</b>)", message)
+    if not header:
+        return message
+
+    numbers = {}
+    for label in ("Entry", "Stop", "Target 1"):
+        match = re.search(rf"{re.escape(label)}:\s*\$([0-9]+(?:\.[0-9]+)?)", message)
+        if match:
+            numbers[label] = float(match.group(1))
+
+    if len(numbers) != 3:
+        return message
+
+    entry = numbers["Entry"]
+    stop = numbers["Stop"]
+    target1 = numbers["Target 1"]
+    if stop < entry < target1:
+        validated_direction = "LONG"
+    elif target1 < entry < stop:
+        validated_direction = "SHORT"
+    else:
+        return message
+
+    current_direction = header.group(3)
+    if current_direction == validated_direction:
+        return message
+
+    replacement = f"{header.group(1)}{header.group(2)} {validated_direction}{header.group(4)}"
+    return message[:header.start()] + replacement + message[header.end():]
 
 
 class TelegramBotProvider(TelegramProvider):
@@ -39,6 +78,9 @@ class TelegramBotProvider(TelegramProvider):
             return TelegramSendResult(success=False, disabled=True, error="TELEGRAM_CHAT_ID missing")
         if not message.strip():
             return TelegramSendResult(success=False, error="Telegram message is empty")
+
+        message = _normalize_trade_direction(message)
+
         if len(message) > 4096:
             return TelegramSendResult(success=False, error=f"Telegram message exceeds 4096 characters ({len(message)})")
 
