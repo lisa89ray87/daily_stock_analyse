@@ -19,20 +19,9 @@ class CatalystEvent:
     source: str
     published_at: str | None
     category: Literal[
-        "EARNINGS",
-        "GUIDANCE",
-        "ANALYST",
-        "PRODUCT",
-        "PARTNERSHIP",
-        "REGULATORY",
-        "LEGAL",
-        "ACQUISITION",
-        "SEMICONDUCTOR",
-        "MACRO",
-        "FINANCING",
-        "INSIDER",
-        "OTHER",
-        "NONE",
+        "EARNINGS", "GUIDANCE", "ANALYST", "PRODUCT", "PARTNERSHIP", "REGULATORY",
+        "LEGAL", "ACQUISITION", "SEMICONDUCTOR", "MACRO", "FINANCING", "INSIDER",
+        "OTHER", "NONE",
     ] = "NONE"
     importance: Literal["HIGH", "MEDIUM", "LOW", "UNKNOWN"] = "UNKNOWN"
     catalyst_direction: Literal["BULLISH", "BEARISH", "NEUTRAL", "UNKNOWN"] = "UNKNOWN"
@@ -92,6 +81,7 @@ class MarketData:
     data_timestamp: str | None = None
     delayed_note: str = "Latest available provider data (may be delayed)."
     intraday_bars: list[dict[str, float | str]] = field(default_factory=list)
+    extended_intraday_bars: list[dict[str, float | str]] = field(default_factory=list)
     intraday_rvol: float | None = None
     intraday_rvol_quality: str = "UNAVAILABLE"
     intraday_rvol_note: str | None = None
