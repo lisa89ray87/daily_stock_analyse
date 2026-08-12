@@ -15,7 +15,6 @@ import yfinance as yf
 from .config import load_config
 from .event_alerts import EventAlert, detect_event_alerts
 from .market_hours import get_market_session_status, is_weekday_in_timezone, utc_now
-from .providers import create_market_data_provider
 from .session_windows import is_time_in_window
 from .telegram_provider import TelegramBotProvider
 
@@ -77,7 +76,12 @@ def _mark_sent(state: dict, event: EventAlert, now) -> None:
 
 
 def _message(events: list[EventAlert], market_time: str, session_state: str, batch_number: int = 1, batch_count: int = 1) -> str:
-    session_label = "EXTENDED / OVERNIGHT" if session_state == "AFTER_HOURS" else "REGULAR"
+    if session_state == "US_REGULAR":
+        session_label = "REGULAR"
+    elif session_state == "PRE_MARKET":
+        session_label = "PRE-MARKET"
+    else:
+        session_label = "EXTENDED / OVERNIGHT"
     batch_label = f" | Batch {batch_number}/{batch_count}" if batch_count > 1 else ""
     lines = ["<b>⚠️ LIVE EVENT WARNING</b>", f"<i>{html.escape(market_time)} | {session_label}{batch_label}</i>", ""]
     for event in events:
@@ -102,7 +106,6 @@ def _message_batches(events: list[EventAlert], market_time: str, session_state: 
     current: list[EventAlert] = []
     for event in events:
         candidate = current + [event]
-        # Leave headroom for the batch label and HTML envelope.
         if current and len(_message(candidate, market_time, session_state, 1, 99)) > max_chars:
             batches.append(current)
             current = [event]
@@ -114,7 +117,7 @@ def _message_batches(events: list[EventAlert], market_time: str, session_state: 
 
 
 def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, float | str]]:
-    """Fetch regular + extended 5-minute bars, including overnight through 04:00 ET."""
+    """Fetch 5-minute regular/pre-market/after-hours/overnight bars from yfinance."""
     frame = yf.Ticker(symbol).history(period="2d", interval="5m", prepost=True, auto_adjust=False)
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame.empty or not required.issubset(frame.columns):
@@ -124,15 +127,17 @@ def _extended_hours_bars(symbol: str, market_tz: ZoneInfo) -> list[dict[str, flo
         df.index = df.index.tz_localize(UTC)
     df.index = df.index.tz_convert(market_tz)
 
-    overnight_close = dt_time(4, 0)
+    extended_close = dt_time(4, 0)
     current_latest = df.index.max()
     anchor_date = current_latest.date()
-    if current_latest.time() < dt_time(9, 30):
+    if current_latest.time() < dt_time(4, 0):
         anchor_date -= timedelta(days=1)
 
-    regular_or_evening = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
-    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time <= overnight_close)
-    df = df[regular_or_evening | overnight]
+    # Previous regular session plus the current day's pre-market/overnight data.
+    regular_and_after = (df.index.date == anchor_date) & (df.index.time >= dt_time(9, 30))
+    overnight = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time < extended_close)
+    premarket = (df.index.date == anchor_date + timedelta(days=1)) & (df.index.time >= extended_close) & (df.index.time < dt_time(9, 30))
+    df = df[regular_and_after | overnight | premarket]
     if df.empty:
         return []
     df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
@@ -157,21 +162,24 @@ def _evaluate_symbol(symbol: str, provider, cfg, session_state: str) -> tuple[st
         print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=market_data_complete", flush=True)
 
         md.session_state = session_state
-        if session_state == "AFTER_HOURS" and _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
+        if session_state in {"AFTER_HOURS", "PRE_MARKET"} and _flag("EVENT_ALERT_AFTER_HOURS_ENABLED", True):
             extended = _extended_hours_bars(symbol, ZoneInfo(cfg.live_market_timezone))
             md.extended_intraday_bars = extended
             if extended:
                 md.intraday_bars = extended
                 md.price = float(extended[-1]["close"])
-                md.after_hours_price = md.price
-                md.selected_price_session = "AFTER_HOURS"
+                md.selected_price_session = "PREMARKET" if session_state == "PRE_MARKET" else "AFTER_HOURS"
+                if session_state == "PRE_MARKET":
+                    md.premarket_price = md.price
+                else:
+                    md.after_hours_price = md.price
                 md.latest_extended_price = md.price
-                md.latest_extended_session = "AFTER_HOURS"
+                md.latest_extended_session = md.selected_price_session
                 md.extended_hours_used = True
                 md.is_extended_hours = True
-                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_complete | bars={len(extended)}", flush=True)
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_complete | bars={len(extended)} | session={session_state}", flush=True)
             else:
-                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_unavailable | status=DATA_LIMITED", flush=True)
+                print(f"EVENT_ALERT_SYMBOL | symbol={symbol} | stage=extended_data_unavailable | status=DATA_LIMITED | session={session_state}", flush=True)
 
         analysis = SimpleNamespace(symbol=symbol, market_data=md)
         events = detect_event_alerts(analysis, cfg)
@@ -243,6 +251,7 @@ def run_event_alerts(base_path: Path | None = None) -> int:
     print(f"Symbols: {len(symbols)}", flush=True)
     print(f"Max concurrent workers: {cfg.event_alert_max_workers}", flush=True)
     print(f"Extended-hours alerts: {'enabled' if _flag('EVENT_ALERT_AFTER_HOURS_ENABLED', True) else 'disabled'} through {extended_close.strftime('%H:%M')} ET", flush=True)
+    print("Pre-market alerts: enabled from 04:00 ET until the 09:30 ET U.S. open", flush=True)
     _startup("ready")
 
     cycle = 0
@@ -263,8 +272,13 @@ def run_event_alerts(base_path: Path | None = None) -> int:
             if not is_time_in_window(session.market_now.time(), dt_time(16, 0), extended_close):
                 print(f"EVENT_ALERT_EVALUATION | extended-hours window ended at {extended_close.strftime('%H:%M')} ET; stopped cleanly", flush=True)
                 return 0
+        elif session.session_state == "PRE_MARKET":
+            if not _flag("EVENT_ALERT_PRE_MARKET_ENABLED", True):
+                print("EVENT_ALERT_EVALUATION | pre-market alerts disabled by configuration", flush=True)
+                time.sleep(interval * 60)
+                continue
         elif session.session_state != "US_REGULAR":
-            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR or AFTER_HOURS session", flush=True)
+            print("EVENT_ALERT_EVALUATION | waiting for US_REGULAR, PRE_MARKET, or AFTER_HOURS session", flush=True)
             time.sleep(interval * 60)
             continue
 
