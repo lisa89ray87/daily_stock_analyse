@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
 
 
 def _num(value):
@@ -22,23 +21,16 @@ def _setup_signature(event: dict) -> tuple:
     )
 
 
-def install_live_alert_guards(engine) -> None:
-    """Install safety guards around the existing live-alert engine.
+def install_live_alert_guards(engine_module) -> None:
+    """Install RVOL and duplicate-setup guards on the core live-alert engine."""
+    # live_alerts_extended_hours exposes the core module as ``engine``.
+    core = getattr(engine_module, "engine", engine_module)
 
-    The guards are deliberately transport/eligibility wrappers so the existing
-    extended-hours strategy remains intact:
-    - DATA_LIMITED/UNAVAILABLE RVOL may not be called fully confirmed.
-    - A numeric RVOL below the configured gate blocks the alert.
-    - A numeric RVOL meeting the gate while data quality is limited is reported
-      as VOLUME_LIMITED_CONFIRMED rather than VOLUME_CONFIRMED.
-    - Identical entry setups are emitted only once until their setup identity
-      changes; the normal cooldown remains in force for different setups.
-    """
-    if getattr(engine, "_live_alert_guards_installed", False):
+    if getattr(core, "_live_alert_guards_installed", False):
         return
 
-    original_eligibility = engine._evaluate_alert_eligibility
-    original_determine_event = engine._determine_event
+    original_eligibility = core._evaluate_alert_eligibility
+    original_determine_event = core._determine_event
 
     def guarded_eligibility(analysis, symbol_state, cfg, now, opening_range_window):
         result, v4, candidate_event_type, trade_levels, volume_lifecycle = original_eligibility(
@@ -52,8 +44,8 @@ def install_live_alert_guards(engine) -> None:
 
         if quality in {"DATA_LIMITED", "UNAVAILABLE"}:
             if rvol is None:
-                limited = engine.VolumeLifecycle(
-                    state=engine.VOLUME_STATE_WAIT_FOR_VOLUME,
+                limited = core.VolumeLifecycle(
+                    state=core.VOLUME_STATE_WAIT_FOR_VOLUME,
                     rvol=None,
                     required_rvol=required,
                     detail="RVOL quality is not reliable; numeric RVOL is unavailable",
@@ -61,14 +53,14 @@ def install_live_alert_guards(engine) -> None:
                 result = replace(
                     result,
                     eligible=False,
-                    reason=engine.ALERT_REASON_RVOL_TOO_LOW,
+                    reason=core.ALERT_REASON_RVOL_TOO_LOW,
                     detail="RVOL unavailable; volume confirmation is required",
                 )
                 return result, v4, candidate_event_type, trade_levels, limited
 
             if rvol < required:
-                limited = engine.VolumeLifecycle(
-                    state=engine.VOLUME_STATE_WAIT_FOR_VOLUME,
+                limited = core.VolumeLifecycle(
+                    state=core.VOLUME_STATE_WAIT_FOR_VOLUME,
                     rvol=rvol,
                     required_rvol=required,
                     detail=f"RVOL {rvol:.2f} is below required {required:.2f}; data quality={quality}",
@@ -76,14 +68,15 @@ def install_live_alert_guards(engine) -> None:
                 result = replace(
                     result,
                     eligible=False,
-                    reason=engine.ALERT_REASON_RVOL_TOO_LOW,
+                    reason=core.ALERT_REASON_RVOL_TOO_LOW,
                     detail=f"RVOL {rvol:.2f} < required {required:.2f} (quality={quality})",
                 )
                 return result, v4, candidate_event_type, trade_levels, limited
 
-            # The number clears the gate, but the provider cannot support the
-            # stronger claim that this is a fully reliable regular-session RVOL.
-            limited = engine.VolumeLifecycle(
+            # Extended-hours RVOL can clear the numeric gate while still being
+            # provider-limited. Keep the alert possible, but never call it fully
+            # reliable volume confirmation.
+            limited = core.VolumeLifecycle(
                 state="VOLUME_LIMITED_CONFIRMED",
                 rvol=rvol,
                 required_rvol=required,
@@ -122,6 +115,6 @@ def install_live_alert_guards(engine) -> None:
         symbol_state["last_alert_signature"] = list(signature)
         return event
 
-    engine._evaluate_alert_eligibility = guarded_eligibility
-    engine._determine_event = guarded_determine_event
-    engine._live_alert_guards_installed = True
+    core._evaluate_alert_eligibility = guarded_eligibility
+    core._determine_event = guarded_determine_event
+    core._live_alert_guards_installed = True
