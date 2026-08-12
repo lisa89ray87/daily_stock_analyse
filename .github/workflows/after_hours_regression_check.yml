@@ -1,0 +1,35 @@
+name: After Hours Regression Check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile modified modules
+        run: |
+          python -m py_compile \
+            src/daily_stock_analyse/models.py \
+            src/daily_stock_analyse/event_alerts.py \
+            src/daily_stock_analyse/event_alert_runner.py \
+            src/daily_stock_analyse/live_alerts_extended_hours.py
+
+      - name: Run focused event-alert regression tests
+        run: python -m pytest -q tests/test_event_alerts.py
