@@ -14,7 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
       - name: Patch trigger lifecycle
         shell: bash
         run: |
@@ -22,42 +23,20 @@ jobs:
           from pathlib import Path
           p = Path('src/daily_stock_analyse/live_alerts.py')
           s = p.read_text(encoding='utf-8')
-          old = s
           replacements = [
-              (
-                  '    timestamp: str | None\n    detail: str\n',
-                  '    timestamp: str | None\n    observed_at: str | None\n    detail: str\n',
-              ),
-              (
-                  '    timestamp: str | None,\n    detail: str,\n) -> TriggerEvidence:',
-                  '    timestamp: str | None,\n    observed_at: str | None,\n    detail: str,\n) -> TriggerEvidence:',
-              ),
-              (
-                  '            timestamp=timestamp,\n            detail=detail,\n',
-                  '            timestamp=timestamp,\n            observed_at=observed_at,\n            detail=detail,\n',
-              ),
-              (
-                  '        timestamp=timestamp,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
-                  '        timestamp=timestamp,\n        observed_at=observed_at,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle',
-              ),
-              (
-                  '        timestamp=trigger_ts,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
-                  '        timestamp=trigger_ts,\n        observed_at=now_utc.isoformat() if price_confirmed else None,\n        detail=confirmation if price_confirmed else waiting_reason,\n',
-              ),
-              (
-                  '    evidence_ts = _parse_ts(evidence.timestamp)\n',
-                  '    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)\n',
-              ),
+              ('    timestamp: str | None\n    detail: str\n', '    timestamp: str | None\n    observed_at: str | None\n    detail: str\n'),
+              ('    timestamp: str | None,\n    detail: str,\n) -> TriggerEvidence:', '    timestamp: str | None,\n    observed_at: str | None,\n    detail: str,\n) -> TriggerEvidence:'),
+              ('            timestamp=timestamp,\n            detail=detail,\n', '            timestamp=timestamp,\n            observed_at=observed_at,\n            detail=detail,\n'),
+              ('        timestamp=timestamp,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle', '        timestamp=timestamp,\n        observed_at=observed_at,\n        detail=detail,\n    )\n\n\ndef _evaluate_trigger_lifecycle'),
+              ('        timestamp=trigger_ts,\n        detail=confirmation if price_confirmed else waiting_reason,\n', '        timestamp=trigger_ts,\n        observed_at=now_utc.isoformat() if price_confirmed else None,\n        detail=confirmation if price_confirmed else waiting_reason,\n'),
+              ('    evidence_ts = _parse_ts(evidence.timestamp)\n', '    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)\n'),
           ]
           for before, after in replacements:
               if before not in s:
                   raise SystemExit(f'Expected pattern not found: {before!r}')
               s = s.replace(before, after, 1)
-          if s == old:
-              raise SystemExit('No changes made')
           p.write_text(s, encoding='utf-8')
           PY
-
       - name: Targeted regression check
         shell: bash
         run: |
@@ -65,26 +44,14 @@ jobs:
           from datetime import UTC, datetime, timedelta
           from types import SimpleNamespace
           from src.daily_stock_analyse.live_alerts import TriggerEvidence, _evaluate_trigger_lifecycle
-
           now = datetime.now(UTC)
-          evidence = TriggerEvidence(
-              confirmed=True,
-              direction='LONG',
-              trigger_type='RETEST',
-              trigger_price=141.67,
-              reference_level=140.75,
-              current_price=141.67,
-              timestamp=(now - timedelta(minutes=30)).isoformat(),
-              observed_at=now.isoformat(),
-              detail='fresh trigger observed now',
-          )
+          evidence = TriggerEvidence(confirmed=True, direction='LONG', trigger_type='RETEST', trigger_price=141.67, reference_level=140.75, current_price=141.67, timestamp=(now - timedelta(minutes=30)).isoformat(), observed_at=now.isoformat(), detail='fresh trigger observed now')
           analysis = SimpleNamespace(battle_plan=SimpleNamespace(invalidation_price=140.02))
           cfg = SimpleNamespace(v4_max_trigger_age_minutes=10)
           result = _evaluate_trigger_lifecycle(evidence, analysis, cfg, now)
           assert result.state == 'TRIGGER_STILL_VALID', result
           print('Targeted trigger lifecycle regression check: PASS')
           PY
-
       - name: Commit patch and remove temporary workflow
         shell: bash
         run: |
