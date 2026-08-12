@@ -9,6 +9,9 @@ import yfinance as yf
 from . import live_alerts_extended_hours as engine
 
 
+MAX_DATA_AGE = timedelta(minutes=15)
+
+
 def _overnight_bars(symbol: str, market_tz: ZoneInfo):
     """Return fresh regular + extended 5-minute bars through 04:00 ET."""
     frame = yf.Ticker(symbol).history(period="1d", interval="5m", prepost=True, auto_adjust=False)
@@ -22,6 +25,11 @@ def _overnight_bars(symbol: str, market_tz: ZoneInfo):
     df.index = df.index.tz_convert(market_tz)
 
     latest = df.index.max()
+    now_local = datetime.now(UTC).astimezone(market_tz)
+    latest_local = latest.to_pydatetime()
+    if now_local - latest_local > MAX_DATA_AGE:
+        return []
+
     anchor_date = latest.date()
     if latest.time() < dt_time(9, 30):
         anchor_date -= timedelta(days=1)
@@ -51,7 +59,7 @@ def run_live_alerts_overnight(base_path=None) -> int:
     # Only replace the extended-hours data window and cutoff.
     os.environ["LIVE_EXTENDED_CLOSE"] = "04:00"
     engine._fetch_extended_bars = _overnight_bars
-    print("LIVE_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance", flush=True)
+    print("LIVE_OVERNIGHT | enabled=True | window=20:00-04:00 ET | provider=yfinance | max_data_age=15m", flush=True)
     return engine.run_live_alerts_extended_hours(base_path)
 
 
