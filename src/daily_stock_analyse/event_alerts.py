@@ -20,14 +20,14 @@ class EventAlert:
 def detect_event_alerts(analysis: StockAnalysis, config: Any) -> list[EventAlert]:
     """Detect early-warning technical events without changing trade eligibility.
 
-    During U.S. after-hours, use the provider's regular-session + after-hours
-    5-minute series when available. Regular-session VWAP and opening-range
-    levels remain the reference levels; after-hours bars are used for fresh
-    price/volume/momentum crosses.
+    Regular, pre-market, after-hours, and overnight sessions use the freshest
+    provider bars available for event detection. Regular-session VWAP/opening
+    range remain reference levels when available; extended bars provide fresh
+    price/volume/momentum signals outside regular hours.
     """
     md = analysis.market_data
     session_state = getattr(md, "session_state", "CLOSED")
-    if session_state == "AFTER_HOURS" and getattr(md, "extended_intraday_bars", None):
+    if session_state in {"AFTER_HOURS", "PRE_MARKET"} and getattr(md, "extended_intraday_bars", None):
         bars = _bars(md.extended_intraday_bars)
     else:
         bars = _bars(md.intraday_bars)
