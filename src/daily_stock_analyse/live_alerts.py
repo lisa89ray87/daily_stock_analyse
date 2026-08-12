@@ -72,6 +72,7 @@ class TriggerEvidence:
     reference_level: float | None
     current_price: float | None
     timestamp: str | None
+    observed_at: str | None
     detail: str
 
 
@@ -477,6 +478,7 @@ def _build_trigger_evidence(
     reference_level: float | None,
     current_price: float | None,
     timestamp: str | None,
+    observed_at: str | None,
     detail: str,
 ) -> TriggerEvidence:
     if not confirmed:
@@ -488,6 +490,7 @@ def _build_trigger_evidence(
             reference_level=reference_level,
             current_price=current_price,
             timestamp=timestamp,
+            observed_at=observed_at,
             detail=detail,
         )
 
@@ -499,6 +502,7 @@ def _build_trigger_evidence(
         reference_level=reference_level,
         current_price=current_price,
         timestamp=timestamp,
+        observed_at=observed_at,
         detail=detail,
     )
 
@@ -507,7 +511,7 @@ def _evaluate_trigger_lifecycle(evidence: TriggerEvidence, analysis: StockAnalys
     if not evidence.confirmed:
         return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="Trigger evidence is not confirmed")
 
-    evidence_ts = _parse_ts(evidence.timestamp)
+    evidence_ts = _parse_ts(evidence.observed_at or evidence.timestamp)
     if evidence_ts is None:
         return TriggerLifecycle(state="TRIGGER_EXPIRED", detail="reason=missing_trigger_timestamp")
 
@@ -795,6 +799,7 @@ def _build_live_setup_assessment(
         reference_level=trigger_reference_level,
         current_price=close if isinstance(close, (int, float)) else md.price,
         timestamp=trigger_ts,
+        observed_at=now_utc.isoformat() if price_confirmed else None,
         detail=confirmation if price_confirmed else waiting_reason,
     )
 
