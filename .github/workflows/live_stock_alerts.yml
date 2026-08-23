@@ -12,8 +12,6 @@ on:
           - "false"
           - "true"
   schedule:
-    # GitHub-hosted jobs are limited to roughly 6 hours, so restart across the day.
-    # Windows are spaced so scheduled runs do not overlap.
     - cron: "25 9 * * 1-5"
       timezone: "America/New_York"
     - cron: "20 15 * * 1-5"
@@ -28,8 +26,6 @@ env:
 
 jobs:
   live-alerts:
-    # Do not cancel a live monitoring run when another dispatch is queued.
-    # The schedule is deliberately spaced to avoid normal overlap.
     concurrency:
       group: live-stock-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: false
@@ -57,8 +53,6 @@ jobs:
         id: restore-alert-state
         uses: actions/cache/restore@v5
         with:
-          # Versioned state namespace prevents an incompatible old state file
-          # from silently affecting the current alert lifecycle after code changes.
           key: live-alert-state-v2-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             live-alert-state-v2-${{ github.ref_name }}-
@@ -68,7 +62,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.telegram_test == 'true' }}
         env:
           TELEGRAM_ENABLED: "1"
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_STOCK_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_STOCK_CHAT_ID }}
         run: python -m src.daily_stock_analyse.telegram_connectivity_test
 
@@ -108,7 +102,7 @@ jobs:
           ALERT_MIN_RVOL: "1.5"
           ALERT_COOLDOWN_MINUTES: "15"
           TELEGRAM_ENABLED: "1"
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_STOCK_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_STOCK_CHAT_ID }}
         run: python -m src.daily_stock_analyse.live_alerts_overnight
 
@@ -130,7 +124,7 @@ jobs:
       - name: Notify Telegram on engine failure
         if: ${{ failure() }}
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_STOCK_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_STOCK_CHAT_ID }}
         run: |
           python - <<'PY'
