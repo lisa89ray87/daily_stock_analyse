@@ -17,8 +17,6 @@ env:
 
 jobs:
   live-event-alerts:
-    # Scheduled windows are spaced to avoid normal overlap; never cancel a
-    # healthy monitoring run just because a later dispatch is queued.
     concurrency:
       group: live-event-alerts-${{ github.workflow }}-${{ github.ref_name }}
       cancel-in-progress: false
@@ -70,9 +68,10 @@ jobs:
           EVENT_ALERT_VOLUME_SPIKE_MULTIPLIER: "2.0"
           EVENT_ALERT_RSI_HIGH: "70"
           EVENT_ALERT_RSI_LOW: "30"
+          # Keep the existing Telegram credentials for Event Alerts unchanged.
           TELEGRAM_ENABLED: "1"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_EVENT_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python -m src.daily_stock_analyse.event_alert_runner_overnight
 
       - name: Save event alert state
@@ -94,10 +93,9 @@ jobs:
         if: ${{ failure() }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_EVENT_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
-          import json
           import os
           import urllib.parse
           import urllib.request
