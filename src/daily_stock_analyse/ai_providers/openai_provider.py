@@ -31,9 +31,6 @@ class OpenAIOverlayProvider(AIOverlayProvider):
             )
 
         try:
-            # Bound both the HTTP request and SDK retries so a quota/rate-limit
-            # failure can hand off to the configured fallback promptly instead
-            # of consuming the workflow's long default retry/timeout window.
             client = OpenAI(
                 api_key=self.api_key,
                 timeout=self.request_timeout_seconds,
@@ -57,36 +54,35 @@ class OpenAIOverlayProvider(AIOverlayProvider):
 
 
 def _classify_openai_error(exc: Exception) -> AIProviderError:
-    text = str(exc).lower()
+    text = str(exc)
+    lowered = text.lower()
     class_name = exc.__class__.__name__.lower()
     status_code = getattr(exc, "status_code", None)
 
-    if status_code == 429 or "429" in text or "insufficient_quota" in text or "credit_balance_exhausted" in text:
-        return AIProviderError(
-            "openai",
-            "OpenAI quota or rate limit exceeded",
-            category="quota_or_rate_limit",
-            status_code=status_code,
-        )
-    if "ratelimit" in class_name or "rate limit" in text:
-        return AIProviderError(
-            "openai",
-            "OpenAI quota or rate limit exceeded",
-            category="quota_or_rate_limit",
-            status_code=status_code,
-        )
-    if status_code in {401, 403} or "authentication" in text or "unauthorized" in text or "api key" in text:
-        return AIProviderError(
-            "openai",
-            "OpenAI authentication or configuration failed",
-            category="authentication",
-            status_code=status_code,
-        )
-    if status_code is not None or class_name.endswith("error"):
-        return AIProviderError(
-            "openai",
-            "OpenAI API request failed",
-            category="api_error",
-            status_code=status_code,
-        )
-    raise exc
+    if status_code == 429 or "429" in lowered or "insufficient_quota" in lowered or "credit_balance_exhausted" in lowered:
+        category = "quota_or_rate_limit"
+        message = "OpenAI quota or rate limit exceeded"
+    elif "ratelimit" in class_name or "rate limit" in lowered:
+        category = "quota_or_rate_limit"
+        message = "OpenAI quota or rate limit exceeded"
+    elif status_code in {401, 403} or "authentication" in lowered or "unauthorized" in lowered or "api key" in lowered:
+        category = "authentication"
+        message = "OpenAI authentication or configuration failed"
+    elif status_code is not None or class_name.endswith("error"):
+        category = "api_error"
+        message = "OpenAI API request failed"
+    else:
+        raise exc
+
+    # Include a short, sanitized provider detail so GitHub Actions can identify
+    # model/endpoint/API compatibility problems without exposing credentials.
+    detail = " ".join(text.replace("\n", " ").split())[:240]
+    if detail:
+        message = f"{message} | detail={detail}"
+
+    return AIProviderError(
+        "openai",
+        message,
+        category=category,
+        status_code=status_code,
+    )
