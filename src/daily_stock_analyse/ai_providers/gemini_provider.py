@@ -48,8 +48,12 @@ class GeminiOverlayProvider(AIOverlayProvider):
                 },
                 timeout=30,
             )
-        except requests.RequestException:
-            raise AIProviderError(self.provider_name, "Gemini API request failed", category="transport_error")
+        except requests.RequestException as exc:
+            detail = " ".join(str(exc).replace("\n", " ").split())[:240]
+            message = "Gemini API request failed"
+            if detail:
+                message = f"{message} | detail={detail}"
+            raise AIProviderError(self.provider_name, message, category="transport_error") from None
 
         if response.status_code >= 300:
             raise _classify_gemini_error(response)
@@ -66,34 +70,33 @@ class GeminiOverlayProvider(AIOverlayProvider):
 
 
 def _classify_gemini_error(response: requests.Response) -> AIProviderError:
-    body = response.text.lower()
+    body = response.text
+    lowered = body.lower()
     status_code = response.status_code
 
-    if status_code == 429 or "insufficient_quota" in body or "credit_balance_exhausted" in body or "rate limit" in body:
-        return AIProviderError(
-            "gemini",
-            "Gemini quota or rate limit exceeded",
-            category="quota_or_rate_limit",
-            status_code=status_code,
-        )
-    if status_code in {401, 403}:
-        return AIProviderError(
-            "gemini",
-            "Gemini authentication or configuration failed",
-            category="authentication",
-            status_code=status_code,
-        )
-    if status_code >= 500:
-        return AIProviderError(
-            "gemini",
-            "Gemini API temporarily unavailable",
-            category="server_error",
-            status_code=status_code,
-        )
+    if status_code == 429 or "insufficient_quota" in lowered or "credit_balance_exhausted" in lowered or "rate limit" in lowered:
+        category = "quota_or_rate_limit"
+        message = "Gemini quota or rate limit exceeded"
+    elif status_code in {401, 403}:
+        category = "authentication"
+        message = "Gemini authentication or configuration failed"
+    elif status_code >= 500:
+        category = "server_error"
+        message = "Gemini API temporarily unavailable"
+    else:
+        category = "api_error"
+        message = "Gemini API request failed"
+
+    # Keep the diagnostic bounded and never include the API key (the key is
+    # supplied separately as a query parameter and is therefore not in body).
+    detail = " ".join(body.replace("\n", " ").split())[:240]
+    if detail:
+        message = f"{message} | detail={detail}"
+
     return AIProviderError(
         "gemini",
-        "Gemini API request failed",
-        category="api_error",
+        message,
+        category=category,
         status_code=status_code,
     )
 
